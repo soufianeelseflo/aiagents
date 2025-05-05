@@ -1,0 +1,23 @@
+# requirements.txt
+
+# Core Dependencies
+python-dotenv>=1.0.0,<2.0.0    # For loading .env configuration files
+requests>=2.31.0,<3.0.0       # For direct HTTP API calls (CRM, Clay, Proxy, potentially Telephony)
+aiohttp>=3.9.0,<4.0.0         # For asynchronous HTTP requests (optional, if needed for specific async wrappers)
+
+# Telephony (Twilio)
+twilio>=8.0.0,<9.0.0           # Official Twilio SDK (using minimally for call control/TwiML generation)
+
+# Voice AI (Deepgram)
+deepgram-sdk>=3.3.0,<4.0.0     # Official Deepgram SDK for STT/TTS streaming
+
+# Language Model (OpenRouter via OpenAI client)
+openai>=1.14.0,<2.0.0         # Official OpenAI library (used to interface with OpenRouter)
+
+# Web Server (Required for handling Twilio webhooks and WebSocket connection)
+fastapi>=0.108.0,<0.112.0      # Minimal web framework for webhooks/websockets
+uvicorn[standard]>=0.25.0,<0.30.0 # ASGI server (includes websockets)
+
+# Data Handling / Parsing (Optional, if needed for complex responses or web scraping)
+# beautifulsoup4>=4.12.0,<5.0.0   # For HTML parsing (if web scraping is added)
+# lxml>=5.0.0,<6.0.0             # Faster HTML/XML parser (alternative to html.parser)
