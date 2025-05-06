@@ -1,0 +1,62 @@
+# Environment variables
+# Ignore specific common env files
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+.env.staging
+
+# Ignore any file starting with .env.
+.env.*
+
+# Ignore any file ending with .env (less common, but safe)
+*.env
+
+# Python cache files and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+*/venv/
+.venv/
+*/.venv/
+ENV/
+*/ENV/
+env/
+*/env/
+ENV/
+*/ENV/
+env.bak/
+*/env.bak/
+venv.bak/
+*/venv.bak/
+
+# IDE and editor directories
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Log files
+logs/*.log
+*.log
+
+# Local CRM log file
+logs/boutique_ai_crm_log.csv
+
+# Resource Manager state file (contains potentially sensitive conceptual trial info)
+data/resource_manager_state.json
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+

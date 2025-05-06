@@ -18,6 +18,13 @@ openai>=1.14.0,<2.0.0         # Official OpenAI library (used to interface with 
 fastapi>=0.108.0,<0.112.0      # Minimal web framework for webhooks/websockets
 uvicorn[standard]>=0.25.0,<0.30.0 # ASGI server (includes websockets)
 
+# Database (Supabase)
+supabase>=2.0.0,<3.0.0         # Official Supabase Python client library
+
+# Caching (Simple LRU Cache)
+lru-dict>=1.1.8,<2.0.0        # Efficient LRU cache implementation
+
 # Data Handling / Parsing (Optional, if needed for complex responses or web scraping)
 # beautifulsoup4>=4.12.0,<5.0.0   # For HTML parsing (if web scraping is added)
 # lxml>=5.0.0,<6.0.0             # Faster HTML/XML parser (alternative to html.parser)
+

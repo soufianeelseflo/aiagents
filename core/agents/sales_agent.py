@@ -6,21 +6,25 @@ import time
 from typing import Dict, Any, List, Optional, Callable, Coroutine
 
 # Import dependencies from other modules
-from core.communication.voice_handler import VoiceHandler # Handles STT/TTS streaming
-from core.services.llm_client import LLMClient # Handles OpenRouter interaction
-from core.services.telephony_wrapper import TelephonyWrapper # Handles Twilio calls
-from core.services.crm_wrapper import CRMWrapper # Handles CRM interaction (local logging)
-# Import configuration centrally
+# These imports assume the structure core/communication and core/services
+from core.communication.voice_handler import VoiceHandler
+from core.services.llm_client import LLMClient # Includes caching
+from core.services.telephony_wrapper import TelephonyWrapper
+from core.services.crm_wrapper import CRMWrapper # Using Supabase version
+# DataWrapper might be needed if agent needs to lookup Clay data mid-call
+# from core.services.data_wrapper import DataWrapper
+# Import configuration centrally - needed for defaults and model name
 import config
 
-# Configure logging (inherits config from config.py)
+# Configure logging (inherits level from config.py)
 logger = logging.getLogger(__name__)
 
 class SalesAgent:
     """
     Autonomous AI agent responsible for conducting hyper-realistic voice sales calls
-    from initiation to potential close for Boutique AI. Integrates various services.
-    Manages its own call lifecycle and interaction flow.
+    from initiation to potential close for Boutique AI. Integrates various services
+    including Supabase for CRM logging and LLM caching.
+    Manages its own call lifecycle and interaction flow based on real-time events.
     """
 
     def __init__(
@@ -31,47 +35,29 @@ class SalesAgent:
         voice_handler: VoiceHandler,
         llm_client: LLMClient,
         telephony_wrapper: TelephonyWrapper,
-        crm_wrapper: CRMWrapper,
+        crm_wrapper: CRMWrapper, # Instance of the Supabase CRM wrapper
+        # data_wrapper: Optional[DataWrapper] = None, # Optional: If agent needs direct Clay access
         # --- Configuration ---
-        initial_prompt: Optional[str] = None, # Allows overriding default prompt
+        initial_prompt: Optional[str] = None,
         target_niche: str = config.AGENT_TARGET_NICHE_DEFAULT,
         max_call_duration: int = config.AGENT_MAX_CALL_DURATION_DEFAULT,
         # --- Callbacks (For Orchestrator interaction) ---
         on_call_complete_callback: Optional[Callable[[str, str, List[Dict[str, str]]], Coroutine[Any, Any, None]]] = None,
         on_call_error_callback: Optional[Callable[[str, str], Coroutine[Any, Any, None]]] = None,
-        # --- Webhook/WebSocket Coordination ---
-        # This agent needs a way to send TTS audio back via the correct telephony WebSocket.
-        # Option 1: Pass the WebSocket object (complex state management).
-        # Option 2: Pass an async queue the agent puts audio into, and the server reads from.
-        # Option 3: Pass an async function that directly sends data over the correct WebSocket.
-        # Using Option 3 for this implementation:
+        # --- WebSocket Callbacks (Required for sending TTS audio/marks) ---
         send_audio_callback: Optional[Callable[[str, bytes], Coroutine[Any, Any, None]]] = None, # Args: call_sid, audio_chunk
         send_mark_callback: Optional[Callable[[str, str], Coroutine[Any, Any, None]]] = None # Args: call_sid, mark_name
         ):
         """
         Initializes the Sales Agent instance with injected dependencies and callbacks.
-
-        Args:
-            agent_id: A unique identifier for this agent instance.
-            target_phone_number: The phone number the agent needs to call.
-            voice_handler: Instance of VoiceHandler for STT/TTS.
-            llm_client: Instance of LLMClient for language model interaction.
-            telephony_wrapper: Instance of TelephonyWrapper for call control.
-            crm_wrapper: Instance of CRMWrapper for CRM interaction/logging.
-            initial_prompt: Specific system prompt for this agent/call. If None, uses a default.
-            target_niche: Information about the specific niche for tailored conversation.
-            max_call_duration: Maximum duration for the call attempt in seconds.
-            on_call_complete_callback: Async callback for orchestrator on call success.
-            on_call_error_callback: Async callback for orchestrator on call failure.
-            send_audio_callback: Async function to send TTS audio chunk back via telephony WebSocket.
-            send_mark_callback: Async function to send a 'mark' message back via telephony WebSocket.
         """
         self.agent_id = agent_id
         self.target_phone_number = target_phone_number
         self.voice_handler = voice_handler
-        self.llm_client = llm_client
+        self.llm_client = llm_client # Now includes caching
         self.telephony_wrapper = telephony_wrapper
-        self.crm_wrapper = crm_wrapper
+        self.crm_wrapper = crm_wrapper # Now uses Supabase
+        # self.data_wrapper = data_wrapper # Store if provided
         self.target_niche = target_niche
         self.max_call_duration = max_call_duration
         self.on_call_complete_callback = on_call_complete_callback
@@ -79,26 +65,26 @@ class SalesAgent:
         self.send_audio_callback = send_audio_callback
         self.send_mark_callback = send_mark_callback
 
-        # Construct the initial prompt
+        # Validate required callbacks for sending audio/marks
+        if not self.send_audio_callback or not self.send_mark_callback:
+             logger.critical(f"Agent {self.agent_id}: CRITICAL - Missing required WebSocket callbacks. Agent cannot send audio.")
+             raise ValueError("SalesAgent requires send_audio_callback and send_mark_callback.")
+
+        # Construct the initial system prompt for the LLM
         self.initial_prompt = initial_prompt or self._get_default_initial_prompt()
 
-        # State variables
+        # State variables initialization
         self.call_sid: Optional[str] = None
-        self.stream_sid: Optional[str] = None # Sid for the specific media stream (from Twilio start event)
+        self.stream_sid: Optional[str] = None
         self.conversation_history: List[Dict[str, str]] = []
         self.is_call_active: bool = False
         self.call_lifecycle_task: Optional[asyncio.Task] = None
-        self.tts_task: Optional[asyncio.Task] = None # Task for ongoing TTS generation
-        self.call_end_event = asyncio.Event() # Signal for call completion/failure
-
-        # --- Critical Check ---
-        if not self.send_audio_callback or not self.send_mark_callback:
-             logger.error(f"Agent {self.agent_id}: Missing required callbacks 'send_audio_callback' or 'send_mark_callback'. Cannot function.")
-             raise ValueError("SalesAgent requires send_audio_callback and send_mark_callback.")
+        self.tts_task: Optional[asyncio.Task] = None
+        self.call_end_event = asyncio.Event()
+        self._final_status_reason: str = "Unknown" # Store reason for call end
+        self._final_error_message: Optional[str] = None # Store error if applicable
 
         # Link voice handler callbacks to agent methods AFTER initialization
-        # This ensures the agent instance is fully formed before callbacks are set.
-        # Important: Assumes the VoiceHandler instance is dedicated to this agent/call.
         self.voice_handler.transcript_callback = self._handle_incoming_transcript
         self.voice_handler.error_callback = self._handle_voice_handler_error
 
@@ -106,146 +92,176 @@ class SalesAgent:
 
     def _get_default_initial_prompt(self) -> str:
         """ Generates a default system prompt including niche focus. """
-        return (f"You are a highly skilled, hyper-realistic AI sales agent for Boutique AI, specializing in {self.target_niche}. "
-                "Your goal is to engage the prospect, understand their needs, present Boutique AI's value proposition persuasively, "
-                "handle objections effectively, and move the conversation towards a clear next step (e.g., booking a demo, closing a deal). "
-                "Maintain a natural, conversational, confident, and empathetic tone. Keep responses concise for voice interaction. "
-                "You must sound indistinguishable from a top-tier human salesperson.")
+        # This prompt is critical and should be refined based on testing and niche requirements.
+        return (f"You are 'Alex', a highly persuasive and articulate AI sales executive representing Boutique AI, specializing in providing autonomous AI sales solutions for {self.target_niche}. "
+                "Your primary objective is to conduct a natural, engaging conversation to uncover the prospect's key challenges and goals related to their sales operations and performance. "
+                "Clearly articulate the unique value proposition of Boutique AI's fully autonomous agents – emphasizing efficiency gains, scalability, cost reduction, and hyper-realistic performance. "
+                "Listen actively, demonstrate empathy, handle objections with data-driven insights and confidence, and strategically guide the conversation towards scheduling a qualified follow-up meeting or demo. "
+                "Maintain a professional yet approachable tone. Your speech cadence and intonation must be indistinguishable from a top-performing human sales professional. Be concise.")
 
     async def start_sales_call(self, call_sid: str, stream_sid: str):
         """
-        Starts the agent's logic once the call is connected and media stream is established.
-        Called by the component managing the WebSocket connection (e.g., the FastAPI endpoint).
-
-        Args:
-            call_sid: The SID of the established call.
-            stream_sid: The SID of the media stream.
+        Activates the agent's logic once the call connects and media stream starts.
+        Called by the WebSocket handler upon receiving the 'start' event.
         """
         if self.is_call_active:
             logger.warning(f"Agent {self.agent_id}: start_sales_call invoked but call already active (SID: {self.call_sid}). Ignoring.")
             return
 
-        logger.info(f"Agent {self.agent_id}: Call connected (SID: {call_sid}, Stream: {stream_sid}). Starting active phase.")
+        logger.info(f"Agent {self.agent_id}: Activating for connected call (SID: {call_sid}, Stream: {stream_sid}).")
         self.is_call_active = True
         self.call_sid = call_sid
         self.stream_sid = stream_sid
         self.call_end_event.clear()
-        self.conversation_history = [] # Reset history
+        self.conversation_history = []
+        self._final_status_reason = "Unknown" # Reset status
+        self._final_error_message = None
 
         try:
             # 1. Connect Voice Handler to Deepgram
-            connected = await self.voice_handler.connect()
-            if not connected or not self.voice_handler.is_connected:
-                 raise ConnectionError(f"Agent {self.agent_id} [{self.call_sid}]: Failed to connect VoiceHandler to Deepgram.")
+            await self.voice_handler.connect()
+            await asyncio.sleep(0.5) # Allow time for connection confirmation via callback
+            if not self.voice_handler.is_connected:
+                 raise ConnectionError(f"Agent {self.agent_id} [{self.call_sid}]: Failed to establish active connection with Deepgram.")
+            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: VoiceHandler connected to Deepgram.")
 
-            # 2. (Optional) Fetch CRM data and potentially send an initial greeting
+            # 2. Fetch pre-call info from Supabase 'contacts' table
+            # This now uses the functional Supabase CRMWrapper
             prospect_data = await self.crm_wrapper.get_contact_info(self.target_phone_number)
             if prospect_data:
-                 logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Found CRM data for prospect.")
-                 # Example: Start with a personalized greeting
-                 # greeting = f"Hi {prospect_data.get('firstName', '')}, this is [Your Agent Persona Name] from Boutique AI. Is now still a good time?"
-                 # await self._initiate_agent_turn(greeting) # Start the conversation
+                 logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Pre-call contact data found in Supabase.")
+                 # TODO: Personalize initial_prompt or first utterance based on prospect_data
+                 # Example: Add prospect name to initial prompt if available
+                 # first_name = prospect_data.get('first_name')
+                 # if first_name: self.initial_prompt += f" You are speaking with {first_name}."
             else:
-                 # Example: Start with a generic greeting if no data
-                 # greeting = "Hi there, this is [Your Agent Persona Name] from Boutique AI. Am I speaking with the right person regarding [topic]?"
-                 # await self._initiate_agent_turn(greeting)
-                 logger.info(f"Agent {self.agent_id} [{self.call_sid}]: No CRM data found. Agent will proceed with generic opening or wait for user.")
-                 # Or simply wait for the first transcript
+                 logger.info(f"Agent {self.agent_id} [{self.call_sid}]: No pre-call contact data found in Supabase.")
 
-            # 3. Start background task to manage call lifecycle (timeout, completion signal)
+            # 3. Optionally send an initial greeting
+            # greeting = "Hi, this is Alex from Boutique AI. Is this a good time to briefly discuss how autonomous agents could impact your sales?"
+            # await self._initiate_agent_turn(greeting)
+            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Ready and waiting for first user utterance.")
+
+            # 4. Start background task to manage call lifecycle
             self.call_lifecycle_task = asyncio.create_task(self._manage_call_lifecycle())
-            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Lifecycle management started.")
+            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Lifecycle monitoring task started.")
 
         except Exception as e:
-            error_msg = f"Error during sales call startup phase: {e}"
+            error_msg = f"Error during agent activation/startup: {e}"
             logger.error(f"Agent {self.agent_id} [{self.call_sid}]: {error_msg}", exc_info=True)
-            await self._handle_fatal_error(error_msg) # Trigger cleanup and error callback
+            await self._handle_fatal_error(error_msg) # Ensure cleanup and notification
 
     async def _manage_call_lifecycle(self):
-        """ Background task monitoring call duration and end signal. """
-        final_status = "Unknown"
-        error_message = None
-        if not self.call_sid: # Should not happen if called correctly
-             logger.error(f"Agent {self.agent_id}: Lifecycle management started without call_sid.")
-             return
+        """ Background task monitoring call duration and the call_end_event. """
+        if not self.call_sid: return
+        final_status = "Error: Lifecycle ended prematurely"
+        error_message = "Lifecycle task ended without proper signal"
         try:
             logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Call lifecycle monitoring started (Timeout: {self.max_call_duration}s).")
             await asyncio.wait_for(self.call_end_event.wait(), timeout=self.max_call_duration)
-            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Call end signal received normally.")
-            # If signaled normally, final_status is determined by the reason _signal_call_end was called
-            # For now, assume "Completed" unless an error was explicitly signaled.
-            # A more robust system might pass status via the event or check agent state.
-            final_status = "Completed" # Default assumption on normal signal
+            # Retrieve status/error set when event was triggered
+            final_status = self._final_status_reason
+            error_message = self._final_error_message
+            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Call end signal received. Status: {final_status}")
 
         except asyncio.TimeoutError:
-            logger.warning(f"Agent {self.agent_id} [{self.call_sid}]: Call exceeded maximum duration ({self.max_call_duration}s). Forcing termination.")
+            logger.warning(f"Agent {self.agent_id} [{self.call_sid}]: Call TIMEOUT ({self.max_call_duration}s). Forcing termination.")
             final_status = "Timeout"
             error_message = "Call exceeded maximum duration."
             await self.telephony_wrapper.end_call(self.call_sid)
 
         except Exception as e:
-             logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Unexpected error in call lifecycle: {e}", exc_info=True)
+             logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Unexpected error in call lifecycle task: {e}", exc_info=True)
              final_status = "Error"
-             error_message = f"Lifecycle management error: {e}"
-             await self.telephony_wrapper.end_call(self.call_sid) # Attempt termination
+             error_message = f"Lifecycle Exception: {e}"
+             await self.telephony_wrapper.end_call(self.call_sid)
 
         finally:
-            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Initiating call cleanup from lifecycle task. Final Status: {final_status}")
-            # Ensure cleanup happens even if called multiple times
-            if self.is_call_active:
+            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Lifecycle task ending. Initiating cleanup with status: {final_status}")
+            if self.is_call_active: # Ensure cleanup runs only once
                  await self._cleanup_call(final_status, error_message)
 
     def signal_call_ended_externally(self, reason: str = "External Stop"):
-        """ Called by the WebSocket handler when the 'stop' event is received from telephony. """
-        if self.is_call_active:
-             logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Received external signal that call ended. Reason: {reason}")
-             self._signal_call_end(reason)
-        else:
-             logger.debug(f"Agent {self.agent_id} [{self.call_sid}]: External call end signal received, but call already inactive.")
+        """ Called by the WebSocket handler on 'stop' event or disconnection. """
+        logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Received external signal that call ended. Reason: {reason}")
+        self._signal_call_end(reason, is_error=False) # Assume normal completion
 
-    def _signal_call_end(self, reason: str):
-        """ Internal method to trigger the call end event. """
-        if not self.call_end_event.is_set(): # Prevent setting multiple times
-             logger.debug(f"Agent {self.agent_id} [{self.call_sid}]: Setting call end event. Reason: {reason}")
+    def _signal_call_end(self, reason: str, is_error: bool = False, error_msg: Optional[str] = None):
+        """ Internal method to trigger the call end event and store final status. """
+        if not self.call_end_event.is_set():
+             logger.debug(f"Agent {self.agent_id} [{self.call_sid}]: Setting call end event. Reason: {reason}, IsError: {is_error}")
+             self._final_status_reason = "Error" if is_error else reason if reason != "Normal Completion" else "Completed"
+             self._final_error_message = error_msg if is_error else None
              self.call_end_event.set()
+        else:
+             logger.debug(f"Agent {self.agent_id} [{self.call_sid}]: Call end signal received, but event already set.")
 
-    # --- Core Interaction Logic ---
 
     async def _handle_incoming_transcript(self, transcript: str):
         """ Handles final transcripts received from the VoiceHandler. """
-        if not self.is_call_active or not self.call_sid: return # Ignore if call inactive
+        if not self.is_call_active or not self.call_sid: return
 
-        logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Received transcript: '{transcript}'")
+        logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Transcript received: '{transcript}'")
         self.conversation_history.append({"role": "client", "text": transcript})
 
-        # --- Barge-in: Cancel any ongoing TTS ---
+        # Cancel any previous TTS task (barge-in)
         await self._cancel_ongoing_tts()
 
-        # --- Initiate Agent's Turn ---
-        await self._initiate_agent_turn()
+        # --- Basic Reasoning Step (Placeholder - Expand this) ---
+        # Analyze transcript/history to decide next micro-goal before calling LLM
+        micro_goal = self._determine_next_goal(transcript)
+        logger.debug(f"Agent {self.agent_id} [{self.call_sid}]: Determined micro-goal: {micro_goal}")
+        # --- End Reasoning Step ---
 
-    async def _initiate_agent_turn(self, specific_text: Optional[str] = None):
-        """ Generates LLM response (if needed) and starts TTS streaming task. """
+        # Initiate Agent's turn (get LLM response and start TTS)
+        await self._initiate_agent_turn(micro_goal=micro_goal)
+
+    def _determine_next_goal(self, last_transcript: str) -> str:
+        """ Simple placeholder for reasoning about the next step. """
+        # TODO: Implement more sophisticated reasoning based on conversation state,
+        # sentiment analysis, objection detection, niche logic etc.
+        if "schedule" in last_transcript.lower() or "demo" in last_transcript.lower():
+            return "Confirm scheduling/demo details."
+        elif "price" in last_transcript.lower() or "cost" in last_transcript.lower():
+            return "Address pricing concerns with value proposition."
+        elif "?" in last_transcript:
+             return "Answer the prospect's question clearly and concisely."
+        else:
+            return "Continue building rapport and uncovering needs." # Default goal
+
+    async def _initiate_agent_turn(self, specific_text: Optional[str] = None, micro_goal: Optional[str] = None):
+        """ Generates LLM response (guided by micro_goal) and starts TTS streaming task. """
         if not self.is_call_active: return
 
         try:
-            llm_response_text = specific_text # Use provided text (e.g., initial greeting) if given
+            llm_response_text = specific_text
             if not llm_response_text:
-                # Generate response from LLM based on history
+                # Add micro-goal to prompt context if available
+                current_messages = self._get_formatted_llm_messages()
+                if micro_goal:
+                     # Inject goal into the system prompt or as a pseudo-user message
+                     # Example: Modify system prompt temporarily (less clean)
+                     # Or add a user message like:
+                     # current_messages.append({"role": "user", "content": f"[Internal Goal: {micro_goal}]"})
+                     # For simplicity, let's slightly modify the system prompt concept here:
+                     current_messages[0]["content"] += f" Your immediate goal for the next response is: {micro_goal}."
+
                 llm_response_text = await self.llm_client.generate_response(
                     model=config.OPENROUTER_MODEL_NAME,
-                    messages=self._get_formatted_llm_messages()
+                    messages=current_messages
+                    # Cache might be less effective if micro-goal changes prompt often
+                    # use_cache=not bool(micro_goal) # Example: Disable cache if goal injected
                 )
 
             if not llm_response_text: # Handle LLM failure
-                 logger.error(f"Agent {self.agent_id} [{self.call_sid}]: LLM failed to generate response.")
-                 llm_response_text = "I'm sorry, I seem to be having trouble formulating a response right now."
+                 logger.error(f"Agent {self.agent_id} [{self.call_sid}]: LLM failed to generate response for goal '{micro_goal}'.")
+                 llm_response_text = "I'm sorry, I need a moment to process that. Could you say that again?"
 
-            # Add agent's response to history *before* speaking
-            if not specific_text: # Don't double-add if it was an initial greeting
+            # Add agent's response to history
+            if not specific_text:
                 self.conversation_history.append({"role": "agent", "text": llm_response_text})
 
-            # Start TTS streaming in a background task
+            # Start TTS streaming task
             logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Starting TTS task for response: '{llm_response_text[:50]}...'")
             self.tts_task = asyncio.create_task(self._stream_tts(llm_response_text))
 
@@ -255,33 +271,23 @@ class SalesAgent:
 
 
     async def _stream_tts(self, text_to_speak: str):
-        """ Task to handle streaming TTS audio back via the provided callback. """
-        if not self.call_sid:
-             logger.error(f"Agent {self.agent_id}: Cannot stream TTS, call_sid is not set.")
-             return
-        if not self.send_audio_callback or not self.send_mark_callback:
-             logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Cannot stream TTS, required callbacks missing.")
-             return
-
+        """ Task to stream TTS audio chunks via the send_audio_callback. """
+        if not self.call_sid or not self.send_audio_callback or not self.send_mark_callback: return
+        tts_start_time = time.monotonic()
+        total_bytes_sent = 0
         try:
-            # Use VoiceHandler to get audio chunks
             async for audio_chunk in self.voice_handler.speak_text(text_to_speak):
                 if audio_chunk:
-                    # Use the injected callback to send audio over the correct WebSocket
                     await self.send_audio_callback(self.call_sid, audio_chunk)
-                else:
-                     logger.warning(f"Agent {self.agent_id} [{self.call_sid}]: TTS generator yielded empty chunk.")
-
-            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Finished streaming TTS audio.")
-            # Send a 'mark' message using the callback to signal end of speech
-            await self.send_mark_callback(self.call_sid, f"agent_speech_ended_{int(time.time())}")
-
+                    total_bytes_sent += len(audio_chunk)
+            tts_duration = time.monotonic() - tts_start_time
+            logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Finished streaming TTS ({total_bytes_sent} bytes in {tts_duration:.2f}s).")
+            mark_name = f"agent_turn_{len(self.conversation_history)}_{int(tts_start_time)}"
+            await self.send_mark_callback(self.call_sid, mark_name)
         except asyncio.CancelledError:
-             logger.info(f"Agent {self.agent_id} [{self.call_sid}]: TTS streaming task was cancelled.")
-             # Optionally send a mark even if cancelled? Maybe not necessary.
+             logger.info(f"Agent {self.agent_id} [{self.call_sid}]: TTS streaming task cancelled.")
         except Exception as e:
-             logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Error occurred during TTS streaming task: {e}", exc_info=True)
-             # Signal a fatal error if TTS fails critically?
+             logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Error during TTS streaming task: {e}", exc_info=True)
              await self._handle_fatal_error(f"TTS Streaming Error: {e}")
 
 
@@ -290,73 +296,64 @@ class SalesAgent:
         if self.tts_task and not self.tts_task.done():
             logger.warning(f"Agent {self.agent_id} [{self.call_sid}]: Cancelling ongoing TTS task.")
             self.tts_task.cancel()
-            try:
-                await self.tts_task # Allow cancellation to process
-            except asyncio.CancelledError:
-                logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Ongoing TTS task cancelled successfully.")
-            self.tts_task = None
+            try: await self.tts_task
+            except asyncio.CancelledError: logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Ongoing TTS task cancelled successfully.")
+            except Exception as e: logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Error awaiting cancelled TTS task: {e}")
+            finally: self.tts_task = None
 
 
     async def _handle_voice_handler_error(self, error_message: str):
-        """ Handles errors reported by the VoiceHandler during an active call. """
+        """ Handles fatal errors reported by the VoiceHandler. """
         logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Received fatal error from VoiceHandler: {error_message}")
         await self._handle_fatal_error(f"VoiceHandler Error: {error_message}")
 
 
     async def _handle_fatal_error(self, error_message: str):
          """ Central handler for errors that should terminate the call. """
-         logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Encountered fatal error: {error_message}")
-         # Signal the lifecycle manager to end the call and trigger cleanup
-         self._signal_call_end(f"Fatal Error: {error_message}")
-         # Optionally try to end call immediately
-         if self.call_sid:
-              await self.telephony_wrapper.end_call(self.call_sid)
-         # Trigger orchestrator error callback directly if needed, though cleanup will also do it
-         # if self.on_call_error_callback:
-         #     await self.on_call_error_callback(self.agent_id, error_message)
+         logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Handling fatal error: {error_message}")
+         self._signal_call_end(f"Fatal Error", is_error=True, error_msg=error_message)
+         if self.call_sid: await self.telephony_wrapper.end_call(self.call_sid)
 
-
-    # --- Utility Methods ---
 
     def _get_formatted_llm_messages(self) -> List[Dict[str, str]]:
         """ Formats conversation history for the LLM API, including system prompt. """
         messages = [{"role": "system", "content": self.initial_prompt}]
-        for entry in self.conversation_history:
+        # Simple history inclusion - consider truncation/summarization for long calls
+        history_limit = 20 # Limit history length sent to LLM
+        start_index = max(0, len(self.conversation_history) - history_limit)
+        for entry in self.conversation_history[start_index:]:
             role = "user" if entry["role"] == "client" else "assistant"
-            messages.append({"role": role, "content": entry["text"]})
+            content = str(entry.get("text", ""))
+            messages.append({"role": role, "content": content})
         return messages
 
     async def _update_crm(self, status: str, notes: str):
-        """ Logs call outcome using the CRMWrapper (which logs locally). """
-        logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Updating CRM Log. Status: {status}")
+        """ Logs call outcome using the CRMWrapper (Supabase version). """
+        if not self.call_sid: return
+        logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Updating CRM Log via Supabase. Status: {status}")
         try:
             success = await self.crm_wrapper.log_call_outcome(
-                phone_number=self.target_phone_number,
-                status=status,
-                notes=notes,
-                agent_id=self.agent_id, # Pass agent ID
-                call_sid=self.call_sid,
+                phone_number=self.target_phone_number, status=status, notes=notes,
+                agent_id=self.agent_id, call_sid=self.call_sid,
                 conversation_history=self.conversation_history
             )
-            if not success:
-                 logger.warning(f"Agent {self.agent_id} [{self.call_sid}]: CRM log update reported failure.")
+            if not success: logger.warning(f"Agent {self.agent_id} [{self.call_sid}]: CRM log update reported failure.")
         except Exception as e:
-            logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Failed to update CRM log: {e}", exc_info=True)
+            logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Exception during CRM log update: {e}", exc_info=True)
 
     async def _cleanup_call(self, final_status: str, error_message: Optional[str]):
         """ Cleans up all resources associated with the call. Ensures idempotency. """
-        if not self.is_call_active:
-             logger.debug(f"Agent {self.agent_id}: Cleanup called but call already inactive.")
-             return
+        if not self.is_call_active: return
         self.is_call_active = False # Mark inactive FIRST
 
-        logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Cleaning up call resources. Final Status: {final_status}")
+        current_call_sid = self.call_sid
+        logger.info(f"Agent {self.agent_id} [{current_call_sid}]: Cleaning up call resources. Final Status: {final_status}")
 
-        # Cancel ongoing tasks safely
+        # Cancel ongoing tasks
         await self._cancel_ongoing_tts()
         if self.call_lifecycle_task and not self.call_lifecycle_task.done():
-             # Avoid cancelling self if called from lifecycle task's finally block
              if asyncio.current_task() is not self.call_lifecycle_task:
+                  logger.debug(f"Agent {self.agent_id} [{current_call_sid}]: Cancelling lifecycle task.")
                   self.call_lifecycle_task.cancel()
                   try: await self.call_lifecycle_task
                   except asyncio.CancelledError: pass
@@ -364,46 +361,43 @@ class SalesAgent:
         # Disconnect voice handler
         await self.voice_handler.disconnect()
 
-        # Ensure telephony call is terminated (might be redundant but safe)
-        if self.call_sid:
-            await self.telephony_wrapper.end_call(self.call_sid)
+        # Ensure telephony call is terminated (safe to call even if already ended)
+        if current_call_sid: await self.telephony_wrapper.end_call(current_call_sid)
 
-        # Update CRM Log
+        # Update CRM Log with final outcome
         notes = f"Call ended. Status: {final_status}."
-        if error_message: notes += f" Error: {error_message}"
+        if error_message: notes += f" Error Detail: {error_message}"
         await self._update_crm(status=final_status, notes=notes)
 
         # Notify Orchestrator via callbacks
         if error_message and self.on_call_error_callback:
-            logger.debug(f"Agent {self.agent_id}: Calling error callback.")
-            await self.on_call_error_callback(self.agent_id, error_message)
+            logger.debug(f"Agent {self.agent_id}: Calling error callback for orchestrator.")
+            try: await self.on_call_error_callback(self.agent_id, error_message)
+            except Exception as cb_err: logger.error(f"Error in on_call_error_callback: {cb_err}")
         elif not error_message and self.on_call_complete_callback:
-            logger.debug(f"Agent {self.agent_id}: Calling completion callback.")
-            await self.on_call_complete_callback(self.agent_id, final_status, self.conversation_history)
+            logger.debug(f"Agent {self.agent_id}: Calling completion callback for orchestrator.")
+            try: await self.on_call_complete_callback(self.agent_id, final_status, self.conversation_history)
+            except Exception as cb_err: logger.error(f"Error in on_call_complete_callback: {cb_err}")
 
         # Reset state fully
         logger.debug(f"Agent {self.agent_id}: Resetting final state variables.")
-        self.call_sid = None
-        self.stream_sid = None
-        # Optionally clear history after logging: self.conversation_history = []
-        self.tts_task = None
-        self.call_lifecycle_task = None
-        self.call_end_event.clear() # Reset event for next potential call
+        self.call_sid = None; self.stream_sid = None; self.tts_task = None
+        self.call_lifecycle_task = None; self.call_end_event.clear()
+        # Keep conversation history for now, could be cleared: self.conversation_history = []
 
-        logger.info(f"Agent {self.agent_id}: Cleanup complete.")
+        logger.info(f"Agent {self.agent_id}: Cleanup complete for call {current_call_sid}.")
 
-    # --- Public method to pass audio received from WebSocket ---
     async def handle_incoming_audio(self, audio_chunk: bytes):
          """ Receives audio chunks from the telephony WebSocket and sends to VoiceHandler. """
-         if self.is_call_active:
-              await self.voice_handler.send_audio_chunk(audio_chunk)
-         else:
-              logger.warning(f"Agent {self.agent_id}: Received audio chunk but call is not active.")
+         if self.is_call_active: await self.voice_handler.send_audio_chunk(audio_chunk)
+         else: logger.debug(f"Agent {self.agent_id}: Received audio chunk but call inactive.")
 
+    async def stop_call(self, reason: str = "External Stop Request"):
+         """ Allows external stop request. """
+         logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Received external stop request. Reason: {reason}")
+         self._signal_call_end(reason, is_error=False)
 
-# Conceptual: How an orchestrator might use this (dependency injection needed)
-# See main.py for actual instantiation and management.
 
 if __name__ == "__main__":
-    print("SalesAgent class defined (Functional). Instantiate and run via an orchestrator with proper dependencies and callbacks.")
+    print("SalesAgent class defined (Functional - Supabase/Cache - Final). Use via Orchestrator.")
 
