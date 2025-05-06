@@ -83,6 +83,9 @@ class SalesAgent:
         self.call_end_event = asyncio.Event()
         self._final_status_reason: str = "Unknown" # Store reason for call end
         self._final_error_message: Optional[str] = None # Store error if applicable
+        self.running = False
+        self.call_task: Optional[asyncio.Task] = None
+        self.interval: int = config.AGENT_RUN_INTERVAL_SECONDS
 
         # Link voice handler callbacks to agent methods AFTER initialization
         self.voice_handler.transcript_callback = self._handle_incoming_transcript
@@ -302,17 +305,99 @@ class SalesAgent:
             finally: self.tts_task = None
 
 
-    async def _handle_voice_handler_error(self, error_message: str):
+    async def _handle_voice_handler_error(self, error: str):
         """ Handles fatal errors reported by the VoiceHandler. """
-        logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Received fatal error from VoiceHandler: {error_message}")
-        await self._handle_fatal_error(f"VoiceHandler Error: {error_message}")
+        logger.error(f"VoiceHandler error on {self.call_sid}: {error}")
+        self._signal_call_end("Error", True, error)
 
 
-    async def _handle_fatal_error(self, error_message: str):
+    async def _handle_fatal_error(self, message: str):
          """ Central handler for errors that should terminate the call. """
-         logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Handling fatal error: {error_message}")
-         self._signal_call_end(f"Fatal Error", is_error=True, error_msg=error_message)
-         if self.call_sid: await self.telephony_wrapper.end_call(self.call_sid)
+         logger.error(f"Fatal error: {message}")
+         self._signal_call_end("Error", True, message)
+         if self.on_call_error_callback:
+            await self.on_call_error_callback(self.agent_id, message)
+
+
+    async def _cleanup_call(self, final_status: str, error_message: Optional[str]):
+        logger.info(f"Agent {self.agent_id}[{self.call_sid}]: Cleaning up. Status: {final_status}")
+        if self.voice_handler.is_connected:
+            await self.voice_handler.disconnect()
+        await self.telephony_wrapper.end_call(self.call_sid)
+        try:
+            await self.crm_wrapper.log_call(self.call_sid, {'status': final_status, 'error': error_message})
+            logger.info("Call outcome logged.")
+        except Exception as e:
+            logger.error(f"Failed to log outcome: {e}", exc_info=True)
+        if self.on_call_complete_callback:
+            await self.on_call_complete_callback(self.agent_id, self.call_sid, self.conversation_history)
+
+
+    async def _initiate_agent_turn(self, text: str):
+        logger.info(f"Agent {self.agent_id}[{self.call_sid}]: Speaking: {text}")
+        await self.send_mark_callback(self.call_sid, 'agent_start')
+        async for chunk in self.voice_handler.speak_text(text):
+            await self.send_audio_callback(self.call_sid, chunk)
+        await self.send_mark_callback(self.call_sid, 'agent_end')
+        self.conversation_history.append({'role':'assistant','content':text})
+
+
+    async def start(self, interval: int = config.AGENT_RUN_INTERVAL_SECONDS):
+        """Begin periodic sales cycles."""
+        if hasattr(self, 'call_task') and self.call_task and not self.call_task.done():
+            logger.warning(f"SalesAgent {self.agent_id}: already running.")
+            return
+        self.running = True
+        self.interval = interval
+        self.call_task = asyncio.create_task(self._run_loop())
+        logger.info(f"SalesAgent {self.agent_id}: Sales loop started (interval {self.interval}s).")
+
+
+    async def stop(self):
+        """Stop periodic sales cycles."""
+        self.running = False
+        if hasattr(self, 'call_task') and self.call_task:
+            self.call_task.cancel()
+            try:
+                await self.call_task
+            except asyncio.CancelledError:
+                logger.info(f"SalesAgent {self.agent_id}: Task cancelled.")
+        logger.info(f"SalesAgent {self.agent_id}: Sales loop stopped.")
+
+
+    async def _run_loop(self):
+        while self.running:
+            logger.info(f"SalesAgent {self.agent_id}: Starting sales cycle.")
+            try:
+                count = await self._run_sales_cycle()
+                logger.info(f"SalesAgent {self.agent_id}: Completed cycle. Calls made: {count}")
+            except Exception as e:
+                logger.error(f"Error in sales cycle: {e}", exc_info=True)
+                if self.on_call_error_callback:
+                    await self.on_call_error_callback(self.agent_id, str(e))
+            await asyncio.sleep(self.interval)
+
+
+    async def _run_sales_cycle(self) -> int:
+        """Execute one batch of outbound calls."""
+        calls = 0
+        call_sid = await self.telephony_wrapper.initiate_call(self.target_phone_number)
+        if call_sid:
+            calls += 1
+            await self.start_sales_call(call_sid, call_sid)
+        return calls
+
+
+    async def handle_incoming_audio(self, audio_chunk: bytes):
+         """ Receives audio chunks from the telephony WebSocket and sends to VoiceHandler. """
+         if self.is_call_active: await self.voice_handler.send_audio_chunk(audio_chunk)
+         else: logger.debug(f"Agent {self.agent_id}: Received audio chunk but call inactive.")
+
+
+    async def stop_call(self, reason: str = "External Stop Request"):
+         """ Allows external stop request. """
+         logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Received external stop request. Reason: {reason}")
+         self._signal_call_end(reason, is_error=False)
 
 
     def _get_formatted_llm_messages(self) -> List[Dict[str, str]]:
@@ -327,77 +412,6 @@ class SalesAgent:
             messages.append({"role": role, "content": content})
         return messages
 
-    async def _update_crm(self, status: str, notes: str):
-        """ Logs call outcome using the CRMWrapper (Supabase version). """
-        if not self.call_sid: return
-        logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Updating CRM Log via Supabase. Status: {status}")
-        try:
-            success = await self.crm_wrapper.log_call_outcome(
-                phone_number=self.target_phone_number, status=status, notes=notes,
-                agent_id=self.agent_id, call_sid=self.call_sid,
-                conversation_history=self.conversation_history
-            )
-            if not success: logger.warning(f"Agent {self.agent_id} [{self.call_sid}]: CRM log update reported failure.")
-        except Exception as e:
-            logger.error(f"Agent {self.agent_id} [{self.call_sid}]: Exception during CRM log update: {e}", exc_info=True)
-
-    async def _cleanup_call(self, final_status: str, error_message: Optional[str]):
-        """ Cleans up all resources associated with the call. Ensures idempotency. """
-        if not self.is_call_active: return
-        self.is_call_active = False # Mark inactive FIRST
-
-        current_call_sid = self.call_sid
-        logger.info(f"Agent {self.agent_id} [{current_call_sid}]: Cleaning up call resources. Final Status: {final_status}")
-
-        # Cancel ongoing tasks
-        await self._cancel_ongoing_tts()
-        if self.call_lifecycle_task and not self.call_lifecycle_task.done():
-             if asyncio.current_task() is not self.call_lifecycle_task:
-                  logger.debug(f"Agent {self.agent_id} [{current_call_sid}]: Cancelling lifecycle task.")
-                  self.call_lifecycle_task.cancel()
-                  try: await self.call_lifecycle_task
-                  except asyncio.CancelledError: pass
-
-        # Disconnect voice handler
-        await self.voice_handler.disconnect()
-
-        # Ensure telephony call is terminated (safe to call even if already ended)
-        if current_call_sid: await self.telephony_wrapper.end_call(current_call_sid)
-
-        # Update CRM Log with final outcome
-        notes = f"Call ended. Status: {final_status}."
-        if error_message: notes += f" Error Detail: {error_message}"
-        await self._update_crm(status=final_status, notes=notes)
-
-        # Notify Orchestrator via callbacks
-        if error_message and self.on_call_error_callback:
-            logger.debug(f"Agent {self.agent_id}: Calling error callback for orchestrator.")
-            try: await self.on_call_error_callback(self.agent_id, error_message)
-            except Exception as cb_err: logger.error(f"Error in on_call_error_callback: {cb_err}")
-        elif not error_message and self.on_call_complete_callback:
-            logger.debug(f"Agent {self.agent_id}: Calling completion callback for orchestrator.")
-            try: await self.on_call_complete_callback(self.agent_id, final_status, self.conversation_history)
-            except Exception as cb_err: logger.error(f"Error in on_call_complete_callback: {cb_err}")
-
-        # Reset state fully
-        logger.debug(f"Agent {self.agent_id}: Resetting final state variables.")
-        self.call_sid = None; self.stream_sid = None; self.tts_task = None
-        self.call_lifecycle_task = None; self.call_end_event.clear()
-        # Keep conversation history for now, could be cleared: self.conversation_history = []
-
-        logger.info(f"Agent {self.agent_id}: Cleanup complete for call {current_call_sid}.")
-
-    async def handle_incoming_audio(self, audio_chunk: bytes):
-         """ Receives audio chunks from the telephony WebSocket and sends to VoiceHandler. """
-         if self.is_call_active: await self.voice_handler.send_audio_chunk(audio_chunk)
-         else: logger.debug(f"Agent {self.agent_id}: Received audio chunk but call inactive.")
-
-    async def stop_call(self, reason: str = "External Stop Request"):
-         """ Allows external stop request. """
-         logger.info(f"Agent {self.agent_id} [{self.call_sid}]: Received external stop request. Reason: {reason}")
-         self._signal_call_end(reason, is_error=False)
-
 
 if __name__ == "__main__":
     print("SalesAgent class defined (Functional - Supabase/Cache - Final). Use via Orchestrator.")
-
