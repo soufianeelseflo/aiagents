@@ -2,13 +2,14 @@
 
 """
 Loads and validates environment variables from a single .env file at the project root.
-Provides configuration constants for the Boutique AI system.
+Provides configuration constants for the Boutique AI system. (Level 45)
 """
 
 import os
 import logging
+import json # For parsing JSON env vars like CSV mapping
 from dotenv import load_dotenv, find_dotenv
-from typing import Optional, Any
+from typing import Optional, Any, Dict, List
 
 # --- Configure Logging ---
 logging.basicConfig(
@@ -63,6 +64,23 @@ def get_bool_env_var(var_name: str, default: bool = False) -> bool:
      if value_str is None: return default
      return value_str.lower() in ['true', '1', 'yes', 'y']
 
+def get_json_env_var(var_name: str, required: bool = False, default: Optional[Union[Dict, List]] = None) -> Optional[Union[Dict, List]]:
+    value_str = get_env_var(var_name, required=required, default=None) # Get raw string or None
+    if value_str:
+        try:
+            return json.loads(value_str)
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON format for env var '{var_name}'. Value: '{value_str[:100]}...'")
+            if required: raise ValueError(f"Invalid JSON for required env var '{var_name}'")
+            return default
+    else: # Value not found or empty
+        if required: # Should have been caught by get_env_var if required and missing
+            msg = f"CRITICAL: Required JSON env var '{var_name}' is missing or empty."
+            logger.critical(msg)
+            raise ValueError(msg)
+        return default
+
+
 # --- Core Configuration Constants ---
 # Twilio
 TWILIO_ACCOUNT_SID: Optional[str] = get_env_var("TWILIO_ACCOUNT_SID")
@@ -76,50 +94,68 @@ DEEPGRAM_TTS_MODEL: str = get_env_var("DEEPGRAM_TTS_MODEL", default="aura-asteri
 
 # OpenRouter
 OPENROUTER_API_KEY: Optional[str] = get_env_var("OPENROUTER_API_KEY")
-OPENROUTER_MODEL_NAME: str = get_env_var("OPENROUTER_MODEL_NAME", default="google/gemini-1.5-flash")
+OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL: str = get_env_var("OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL", default="google/gemini-1.5-pro-latest")
+OPENROUTER_DEFAULT_STRATEGY_MODEL: str = get_env_var("OPENROUTER_DEFAULT_STRATEGY_MODEL", default="google/gemini-1.5-flash-latest")
+OPENROUTER_DEFAULT_ANALYSIS_MODEL: str = get_env_var("OPENROUTER_DEFAULT_ANALYSIS_MODEL", default="google/gemini-1.5-pro-latest")
+OPENROUTER_DEFAULT_VISION_MODEL: str = get_env_var("OPENROUTER_DEFAULT_VISION_MODEL", default="openai/gpt-4o")
 OPENROUTER_SITE_URL: Optional[str] = get_env_var("OPENROUTER_SITE_URL", required=False, default="https://your-app.com")
 OPENROUTER_APP_NAME: Optional[str] = get_env_var("OPENROUTER_APP_NAME", required=False, default="BoutiqueAI")
+OPENROUTER_CLIENT_MAX_RETRIES: int = get_int_env_var("OPENROUTER_CLIENT_MAX_RETRIES", default=3)
+OPENROUTER_CLIENT_TIMEOUT_SECONDS: int = get_int_env_var("OPENROUTER_CLIENT_TIMEOUT_SECONDS", default=180)
+
 
 # Proxies
 PROXY_USERNAME: Optional[str] = get_env_var("PROXY_USERNAME", required=False)
 PROXY_PASSWORD: Optional[str] = get_env_var("PROXY_PASSWORD", required=False)
 
 # Clay.com
-CLAY_API_KEY: Optional[str] = get_env_var("CLAY_API_KEY", required=False) # May be used by ResourceManager for some scenarios
-CLAY_API_BASE_URL: str = get_env_var("CLAY_API_BASE_URL", default="https://api.clay.com/v1") # VERIFY if used
-CLAY_RESULTS_WEBHOOK_SECRET: Optional[str] = get_env_var("CLAY_RESULTS_WEBHOOK_SECRET", required=False) # For securing your inbound webhook
+CLAY_API_KEY: Optional[str] = get_env_var("CLAY_API_KEY", required=False) # Primarily for RM, DataWrapper uses webhooks
+CLAY_API_BASE_URL: str = get_env_var("CLAY_API_BASE_URL", default="https://api.clay.com/v1")
+CLAY_ENRICHMENT_WEBHOOK_URL_PRIMARY: Optional[str] = get_env_var("CLAY_ENRICHMENT_WEBHOOK_URL_PRIMARY", required=False) # Optional if not using Clay enrichment
+CLAY_RESULTS_CALLBACK_SECRET_TOKEN: Optional[str] = get_env_var("CLAY_RESULTS_CALLBACK_SECRET_TOKEN", required=False) # Optional but recommended for security
+CLAY_CALLBACK_AUTH_HEADER_NAME: str = get_env_var("CLAY_CALLBACK_AUTH_HEADER_NAME", default="X-Callback-Auth-Token", required=False)
+
 
 # Supabase
 SUPABASE_URL: Optional[str] = get_env_var("SUPABASE_URL", required=False)
-SUPABASE_KEY: Optional[str] = get_env_var("SUPABASE_KEY", required=False)
+SUPABASE_KEY: Optional[str] = get_env_var("SUPABASE_KEY", required=False) # Must be Service Role Key for DB setup
 SUPABASE_ENABLED: bool = bool(SUPABASE_URL and SUPABASE_KEY)
-SUPABASE_CALL_LOG_TABLE: str = get_env_var("SUPABASE_CALL_LOG_TABLE", default="call_logs")
+SUPABASE_CALL_LOGS_TABLE: str = get_env_var("SUPABASE_CALL_LOGS_TABLE", default="call_logs") # Note pluralization consistency
 SUPABASE_CONTACTS_TABLE: str = get_env_var("SUPABASE_CONTACTS_TABLE", default="contacts")
 SUPABASE_RESOURCES_TABLE: str = get_env_var("SUPABASE_RESOURCES_TABLE", default="managed_resources")
 
 # Agent Behavior
-AGENT_TARGET_NICHE_DEFAULT: str = get_env_var("AGENT_TARGET_NICHE_DEFAULT", default="B2B SaaS Companies")
+AGENT_TARGET_NICHE_DEFAULT: str = get_env_var("AGENT_TARGET_NICHE_DEFAULT", default="B2B Technology Scale-ups")
 AGENT_MAX_CALL_DURATION_DEFAULT: int = get_int_env_var("AGENT_MAX_CALL_DURATION_DEFAULT", default=3600)
-ACQUISITION_AGENT_RUN_INTERVAL_SECONDS: int = get_int_env_var("ACQUISITION_AGENT_RUN_INTERVAL_SECONDS", default=14400)
+ACQUISITION_AGENT_RUN_INTERVAL_SECONDS: int = get_int_env_var("ACQUISITION_AGENT_RUN_INTERVAL_SECONDS", default=7200)
 ACQUISITION_AGENT_BATCH_SIZE: int = get_int_env_var("ACQUISITION_AGENT_BATCH_SIZE", default=25)
+ACQ_LEAD_SOURCE_TYPE: str = get_env_var("ACQ_LEAD_SOURCE_TYPE", default="supabase_query", required=False)
+ACQ_LEAD_SOURCE_PATH: str = get_env_var("ACQ_LEAD_SOURCE_PATH", default="data/initial_leads.csv", required=False)
+ACQ_LEAD_SOURCE_CSV_MAPPING: Dict = get_json_env_var("ACQ_LEAD_SOURCE_CSV_MAPPING", default={"company_name": "company_name", "domain": "domain", "email": "primary_contact_email_guess"}, required=False)
+ACQ_SUPABASE_PENDING_LEAD_STATUS: str = get_env_var("ACQ_SUPABASE_PENDING_STATUS", default="New_Raw_Lead", required=False)
+ACQ_QUALIFICATION_THRESHOLD: int = get_int_env_var("ACQ_QUALIFICATION_THRESHOLD", default=7, required=False)
+
 
 # Server & Webhooks
-BASE_WEBHOOK_URL: Optional[str] = get_env_var("BASE_WEBHOOK_URL") # Must be your public URL (e.g., https://myapp.com or ngrok URL)
+BASE_WEBHOOK_URL: Optional[str] = get_env_var("BASE_WEBHOOK_URL") # Must NOT have trailing slash if using urljoin or careful appending
 LOCAL_SERVER_PORT: int = get_int_env_var("LOCAL_SERVER_PORT", default=8080)
+UVICORN_RELOAD: bool = get_bool_env_var("UVICORN_RELOAD", default=False)
 
 # System Settings
 LOG_LEVEL: str = get_env_var("LOG_LEVEL", default="INFO").upper()
-LOG_FILE: Optional[str] = get_env_var("LOG_FILE", required=False, default="logs/boutique_ai.log")
+LOG_FILE: Optional[str] = get_env_var("LOG_FILE", required=False, default="logs/boutique_ai_app.log")
 LLM_CACHE_SIZE: int = get_int_env_var("LLM_CACHE_SIZE", default=200)
-MAX_CONCURRENT_BROWSER_AUTOMATIONS: int = get_int_env_var("MAX_CONCURRENT_BROWSER_AUTOMATIONS", default=2)
+MAX_CONCURRENT_BROWSER_AUTOMATIONS: int = get_int_env_var("MAX_CONCURRENT_BROWSER_AUTOMATIONS", default=1)
 
 # --- Apply Logging Configuration ---
 _root_logger = logging.getLogger()
 for _handler in _root_logger.handlers[:]: _root_logger.removeHandler(_handler)
+
 _valid_log_levels = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING, "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL}
 _final_log_level_val = _valid_log_levels.get(LOG_LEVEL, logging.INFO)
 if LOG_LEVEL not in _valid_log_levels: logger.warning(f"Invalid LOG_LEVEL '{LOG_LEVEL}'. Defaulting to INFO.")
 _root_logger.setLevel(_final_log_level_val)
+
 _formatter = logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - [%(pathname)s:%(lineno)d %(funcName)s] - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
@@ -128,6 +164,7 @@ _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_formatter)
 _root_logger.addHandler(_console_handler)
 logger.info(f"Console logging re-configured with level {LOG_LEVEL}.")
+
 if LOG_FILE:
     try:
         _log_dir = os.path.dirname(LOG_FILE)
@@ -137,10 +174,13 @@ if LOG_FILE:
         _file_handler.setFormatter(_formatter)
         _root_logger.addHandler(_file_handler)
         logger.info(f"Rotating file logging configured to '{LOG_FILE}' with level {LOG_LEVEL}.")
-    except Exception as e: logger.error(f"Failed to configure file logging to '{LOG_FILE}': {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Failed to configure file logging to '{LOG_FILE}': {e}", exc_info=True)
 
-logger.info("Configuration loading process complete.")
-if not BASE_WEBHOOK_URL: logger.critical("CRITICAL: BASE_WEBHOOK_URL is not set. Twilio webhooks will fail.")
+# --- Final Sanity Checks & Info ---
+logger.info("--- Configuration Loaded ---")
+if not BASE_WEBHOOK_URL: logger.critical("CRITICAL: BASE_WEBHOOK_URL is not set. Twilio webhooks WILL fail.")
 if not SUPABASE_ENABLED: logger.warning("Supabase persistence is DISABLED.")
-if not CLAY_API_KEY and not CLAY_RESULTS_WEBHOOK_SECRET:
-    logger.warning("Neither CLAY_API_KEY nor CLAY_RESULTS_WEBHOOK_SECRET are set. Clay.com interactions might be limited or insecure.")
+if not CLAY_ENRICHMENT_WEBHOOK_URL_PRIMARY: logger.warning("CLAY_ENRICHMENT_WEBHOOK_URL_PRIMARY not set. AcquisitionAgent Clay enrichment will fail.")
+if not CLAY_RESULTS_CALLBACK_SECRET_TOKEN: logger.warning("CLAY_RESULTS_CALLBACK_SECRET_TOKEN not set. Clay results webhook is INSECURE.")
+logger.info("Configuration loading complete.")
