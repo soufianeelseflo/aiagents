@@ -1,421 +1,301 @@
-# core/agents/acquisition_agent.py
+# core/services/fingerprint_generator.py
 
-import asyncio
 import logging
 import random
-import time
-from typing import Dict, Any, Optional, List, Callable, Coroutine
+import json
+from typing import Dict, Any, Optional, List, Tuple
 
-# Import dependencies from other modules
-from core.agents.resource_manager import ResourceManager # Manages proxies, conceptual trials, keys
-from core.services.data_wrapper import DataWrapper # Interacts with Clay tables via API
-from core.services.llm_client import LLMClient # For lead analysis, scoring, angle generation
-from core.services.crm_wrapper import CRMWrapper # For storing qualified leads in Supabase
-# Import configuration centrally if needed for defaults
-import config
+# Using fake_useragent for realistic UAs. Add 'fake_useragent' to requirements.txt
+try:
+    from fake_useragent import UserAgent, FakeUserAgentError
+    UA_GENERATOR_AVAILABLE = True
+except ImportError:
+    logging.getLogger(__name__).warning(
+        "fake_useragent library not found. Falling back to basic User-Agent list. "
+        "Install with: pip install fake-useragent"
+    )
+    UA_GENERATOR_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-class AcquisitionAgent:
+# Fallback User Agents if fake_useragent is not available or fails
+FALLBACK_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+]
+
+# Common screen resolutions (width, height)
+COMMON_SCREEN_RESOLUTIONS: List[Tuple[int, int]] = [
+    (1920, 1080), (1366, 768), (1536, 864), (2560, 1440),
+    (1440, 900), (1280, 720), (1600, 900), (1280, 800),
+    (3840, 2160), # 4K
+    # Mobile-like resolutions (less common for desktop-focused automation unless specified)
+    # (360, 640), (375, 667), (414, 896), (390, 844)
+]
+
+# Common color depths
+COMMON_COLOR_DEPTHS: List[int] = [24, 30, 32]
+
+# Common Accept-Language headers
+COMMON_ACCEPT_LANGUAGES: List[str] = [
+    "en-US,en;q=0.9",
+    "en-GB,en;q=0.8",
+    "en;q=0.7", # Broader English
+    "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7", # German example
+    "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7", # French example
+]
+
+class FingerprintGenerator:
     """
-    Autonomous AI agent responsible for identifying, enriching, analyzing,
-    and qualifying potential B2B leads using resourceful methods, primarily
-    leveraging Clay.com data (via table interactions) and AI analysis.
-    Stores qualified leads in the Supabase database via CRMWrapper.
+    Generates plausible browser fingerprint profiles to make automated interactions
+    appear more human-like. Focuses on User-Agents, HTTP headers, and basic
+    navigator-like properties.
+
+    Advanced fingerprinting (Canvas, WebGL, AudioContext, Fonts, Plugins, WebRTC IP)
+    is highly complex and typically requires direct browser manipulation (e.g., via
+    Playwright/Selenium with custom JavaScript injections) or specialized services.
+    This generator provides a solid baseline for HTTP-level interactions.
     """
 
-    def __init__(
-        self,
-        agent_id: str,
-        # --- Dependency Injection ---
-        resource_manager: ResourceManager,
-        data_wrapper: DataWrapper, # Clay table interaction
-        llm_client: LLMClient,
-        crm_wrapper: CRMWrapper, # Supabase interaction
-        # --- Configuration ---
-        target_criteria: Optional[Dict[str, Any]] = None, # Specific criteria for this run
-        run_interval_seconds: int = 3600 * 4, # How often to run the cycle (e.g., 4 hours)
-        batch_size: int = 50, # How many leads to process per cycle
-        # --- Callbacks (Optional - for Orchestrator interaction) ---
-        on_cycle_complete_callback: Optional[Callable[[str, int], Coroutine[Any, Any, None]]] = None, # Args: agent_id, leads_added
-        on_cycle_error_callback: Optional[Callable[[str, str], Coroutine[Any, Any, None]]] = None # Args: agent_id, error_message
-        ):
+    _ua_generator_instance: Optional['UserAgent'] = None
+
+    def __init__(self, llm_client: Optional[Any] = None):
         """
-        Initializes the Acquisition Agent instance.
+        Initializes the FingerprintGenerator.
 
         Args:
-            agent_id: Unique identifier for this agent.
-            resource_manager: Instance of ResourceManager.
-            data_wrapper: Instance of DataWrapper (already configured with API key if possible).
-            llm_client: Instance of LLMClient.
-            crm_wrapper: Instance of CRMWrapper (connected to Supabase).
-            target_criteria: Dictionary defining the ideal customer profile for this run.
-            run_interval_seconds: Frequency at which the acquisition cycle should run.
-            batch_size: Number of leads to attempt to process in one cycle.
-            on_cycle_complete_callback: Async callback on successful cycle completion.
-            on_cycle_error_callback: Async callback on cycle failure.
+            llm_client: Optional LLMClient (currently unused, for future extensions).
         """
-        self.agent_id = agent_id
-        self.resource_manager = resource_manager
-        self.data_wrapper = data_wrapper
         self.llm_client = llm_client
-        self.crm_wrapper = crm_wrapper
-        self.target_criteria = target_criteria if target_criteria else self._get_default_target_criteria()
-        self.run_interval_seconds = run_interval_seconds
-        self.batch_size = batch_size
-        self.on_cycle_complete_callback = on_cycle_complete_callback
-        self.on_cycle_error_callback = on_cycle_error_callback
+        if UA_GENERATOR_AVAILABLE and FingerprintGenerator._ua_generator_instance is None:
+            try:
+                # Initialize lazily and share across instances if needed, or per instance
+                FingerprintGenerator._ua_generator_instance = UserAgent(fallback=random.choice(FALLBACK_USER_AGENTS))
+                logger.info("FingerprintGenerator initialized with fake_useragent.")
+            except FakeUserAgentError as e:
+                logger.error(f"Failed to initialize fake_useragent: {e}. Will use fallback list.")
+                UA_GENERATOR_AVAILABLE = False # Disable it if init fails
+        elif not UA_GENERATOR_AVAILABLE:
+            logger.warning("Using basic fallback User-Agent list for FingerprintGenerator.")
 
-        self._is_running = False
-        self._current_task: Optional[asyncio.Task] = None
+    def _get_random_user_agent(self, os_type: Optional[str] = None, browser_type: Optional[str] = None) -> str:
+        """Gets a random User-Agent string, potentially filtered."""
+        if UA_GENERATOR_AVAILABLE and FingerprintGenerator._ua_generator_instance:
+            ua_gen = FingerprintGenerator._ua_generator_instance
+            try:
+                if browser_type:
+                    browser_lower = browser_type.lower()
+                    if browser_lower == "chrome": return ua_gen.chrome
+                    if browser_lower == "firefox": return ua_gen.firefox
+                    if browser_lower == "safari": return ua_gen.safari
+                    if browser_lower == "edge": return ua_gen.edge
+                    if browser_lower == "ie": return ua_gen.ie # Less common now
+                    # If specific browser fails, fall through to OS or random
+                if os_type:
+                    os_lower = os_type.lower()
+                    if "win" in os_lower: return ua_gen.windows # .windows is not a direct attr, use .chrome etc.
+                    elif "mac" in os_lower or "osx" in os_lower: return ua_gen.mac # .mac is not direct
+                    elif "linux" in os_lower: return ua_gen.linux # .linux is not direct
+                    # fake_useragent doesn't have direct os properties like .windows
+                    # It picks based on platform popularity. To force an OS, you might need to iterate or use specific browser.
+                    # For simplicity, if OS is given, we'll just get a random popular one.
+                    # A more advanced approach would be to get specific browser UAs known for that OS.
+                    return ua_gen.random # Fallback if OS/browser combo is tricky
+                return ua_gen.random
+            except Exception as e: # Catch broader errors from fake_useragent
+                 logger.error(f"Error using fake_useragent (os_type={os_type}, browser_type={browser_type}): {e}. Using fallback.")
+                 return random.choice(FALLBACK_USER_AGENTS)
+        return random.choice(FALLBACK_USER_AGENTS)
 
-        logger.info(f"AcquisitionAgent {self.agent_id} initialized. Run interval: {self.run_interval_seconds}s.")
+    def _generate_sec_ch_ua_headers(self, user_agent: str) -> Dict[str, str]:
+        """Generates plausible Sec-CH-UA-* headers based on User-Agent."""
+        # This is a simplified heuristic. Real values are complex.
+        # Example: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36
+        headers = {}
+        ua_lower = user_agent.lower()
 
-    def _get_default_target_criteria(self) -> Dict[str, Any]:
-        """ Defines default lead targeting criteria if none provided. """
-        # TODO: Load this from a config file or database for flexibility
-        logger.warning("Using default target criteria for lead acquisition.")
-        return {
-            "clay_table_source_id": "t_YOUR_PREBUILT_LEAD_TABLE_ID", # ** MUST BE SET ** Table built in Clay UI
-            "min_company_size": 50,
-            "max_company_size": 1000,
-            "industries": ["Software", "Technology", "Financial Services"], # Example list
-            "job_titles": ["VP Sales", "Head of Sales", "Sales Director", "Chief Revenue Officer"],
-            "required_keywords": ["growth", "efficiency", "automation"], # Keywords in profile/company description
-            "geo_target": ["US", "CA"] # Target countries/regions
+        brands = []
+        platform = ""
+        mobile = "?0" # Default to not mobile
+
+        if "chrome" in ua_lower:
+            version_match = random.search(r"chrome/(\d+)", ua_lower)
+            version = version_match.group(1) if version_match else "123" # Default recent
+            brands.extend([
+                {"brand": "Not/A)Brand", "version": "8"}, # Common GREASE value
+                {"brand": "Chromium", "version": version},
+                {"brand": "Google Chrome", "version": version}
+            ])
+        elif "firefox" in ua_lower:
+            version_match = random.search(r"firefox/(\d+)", ua_lower)
+            version = version_match.group(1) if version_match else "124"
+            brands.extend([
+                {"brand": "Firefox", "version": version} # Firefox doesn't use the Chromium brand list
+            ])
+        elif "safari" in ua_lower and "chrome" not in ua_lower: # Exclude Chrome UAs that also mention Safari
+            version_match = random.search(r"version/(\d+[\.\d]*)", ua_lower) # Safari version is different
+            version = version_match.group(1) if version_match else "17.3"
+            # Safari's Sec-CH-UA is often simpler or might not be sent as aggressively
+            brands.extend([
+                 {"brand": "Safari", "version": version.split('.')[0]}, # Major version
+                 {"brand": "Not/A)Brand", "version": "8"},
+                 {"brand": "Chromium", "version": "123"} # Often includes a Chromium base
+            ])
+        else: # Generic fallback
+             brands.extend([
+                {"brand": "Not/A)Brand", "version": "8"},
+                {"brand": "GenericBrowser", "version": "100"}
+            ])
+        
+        random.shuffle(brands) # Order can vary
+        headers["Sec-CH-UA"] = ", ".join([f'"{b["brand"]}";v="{b["version"]}"' for b in brands])
+
+        if "windows" in ua_lower: platform = '"Windows"'
+        elif "macintosh" in ua_lower or "mac os x" in ua_lower: platform = '"macOS"'
+        elif "linux" in ua_lower: platform = '"Linux"'
+        elif "android" in ua_lower: platform = '"Android"'; mobile = "?1"
+        elif "iphone" in ua_lower or "ipad" in ua_lower: platform = '"iOS"'; mobile = "?1"
+        else: platform = '"Unknown"'
+
+        headers["Sec-CH-UA-Mobile"] = mobile
+        if platform != '"Unknown"':
+            headers["Sec-CH-UA-Platform"] = platform
+            # headers["Sec-CH-UA-Platform-Version"] = ... (more complex to derive accurately)
+            # headers["Sec-CH-UA-Arch"] = ... ("x86")
+            # headers["Sec-CH-UA-Model"] = ... ("")
+            # headers["Sec-CH-UA-Full-Version-List"] = ... (more detailed brand list)
+
+        return headers
+
+    async def generate_profile(
+        self,
+        role_context: str = "General Web Interaction", # For potential future LLM use
+        os_type: Optional[str] = None,      # e.g., "Windows", "macOS", "Linux"
+        browser_type: Optional[str] = None, # e.g., "Chrome", "Firefox", "Safari"
+        language_prefs: Optional[List[str]] = None # e.g., ["en-US", "en"]
+        ) -> Dict[str, Any]:
+        """
+        Generates a more comprehensive fingerprint profile dictionary.
+        """
+        logger.debug(f"Generating fingerprint profile. Context: '{role_context}', OS: {os_type}, Browser: {browser_type}")
+
+        user_agent = self._get_random_user_agent(os_type=os_type, browser_type=browser_type)
+        
+        # Determine OS and Browser from UA if not specified, for consistency
+        final_os = os_type
+        final_browser = browser_type
+        ua_lower = user_agent.lower()
+
+        if not final_os:
+            if "windows" in ua_lower: final_os = "Windows"
+            elif "macintosh" in ua_lower or "mac os x" in ua_lower: final_os = "macOS"
+            elif "linux" in ua_lower: final_os = "Linux"
+            elif "android" in ua_lower: final_os = "Android"
+            elif "iphone" in ua_lower: final_os = "iOS"
+            else: final_os = "Unknown"
+        
+        if not final_browser:
+            if "chrome" in ua_lower and "chromium" not in ua_lower and "edg" not in ua_lower: final_browser = "Chrome" # Exclude Chromium, Edge
+            elif "firefox" in ua_lower: final_browser = "Firefox"
+            elif "safari" in ua_lower and "chrome" not in ua_lower: final_browser = "Safari"
+            elif "edg" in ua_lower: final_browser = "Edge"
+            else: final_browser = "Unknown"
+
+
+        # Base Headers
+        headers = {
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": random.choice(COMMON_ACCEPT_LANGUAGES) if not language_prefs else ",".join([f"{lang};q={1.0-i*0.1}" for i, lang in enumerate(language_prefs)]),
+            "Accept-Encoding": "gzip, deflate, br", # Modern browsers support br
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1", # For initial HTTP navigations
         }
 
-    async def start(self):
-        """ Starts the periodic acquisition cycle. """
-        if self._is_running:
-            logger.warning(f"AcquisitionAgent {self.agent_id} start requested but already running.")
-            return
-        logger.info(f"AcquisitionAgent {self.agent_id} starting run cycle (Interval: {self.run_interval_seconds}s).")
-        self._is_running = True
-        # Create task that runs the cycle repeatedly
-        self._current_task = asyncio.create_task(self._run_loop())
+        # Sec-CH-UA (Client Hints) headers - more modern
+        headers.update(self._generate_sec_ch_ua_headers(user_agent))
 
-    async def stop(self):
-        """ Stops the acquisition cycle gracefully. """
-        if not self._is_running or not self._current_task:
-            logger.warning(f"AcquisitionAgent {self.agent_id} stop requested but not running.")
-            return
-        logger.info(f"AcquisitionAgent {self.agent_id} stopping run cycle...")
-        self._is_running = False
-        if self._current_task:
-            self._current_task.cancel()
-            try:
-                await self._current_task
-            except asyncio.CancelledError:
-                logger.info(f"AcquisitionAgent {self.agent_id} run cycle task cancelled.")
-            except Exception as e:
-                 logger.error(f"Error during AcquisitionAgent stop/task cleanup: {e}", exc_info=True)
-        self._current_task = None
-        logger.info(f"AcquisitionAgent {self.agent_id} stopped.")
-
-    async def _run_loop(self):
-        """ The main loop that periodically executes the acquisition cycle. """
-        while self._is_running:
-            start_time = time.monotonic()
-            leads_added = 0
-            error_msg = None
-            try:
-                logger.info(f"AcquisitionAgent {self.agent_id}: Starting new acquisition cycle.")
-                leads_added = await self._run_acquisition_cycle()
-                logger.info(f"AcquisitionAgent {self.agent_id}: Cycle finished. Added {leads_added} qualified leads.")
-                if self.on_cycle_complete_callback:
-                     await self.on_cycle_complete_callback(self.agent_id, leads_added)
-
-            except Exception as e:
-                error_msg = f"Error in acquisition cycle: {e}"
-                logger.error(f"AcquisitionAgent {self.agent_id}: {error_msg}", exc_info=True)
-                if self.on_cycle_error_callback:
-                     await self.on_cycle_error_callback(self.agent_id, error_msg)
-
-            finally:
-                # Wait for the next interval, accounting for execution time
-                elapsed_time = time.monotonic() - start_time
-                wait_time = max(0, self.run_interval_seconds - elapsed_time)
-                logger.info(f"AcquisitionAgent {self.agent_id}: Cycle took {elapsed_time:.2f}s. Waiting {wait_time:.2f}s for next cycle.")
-                if self._is_running: # Check again before sleeping
-                    await asyncio.sleep(wait_time)
-
-    async def _run_acquisition_cycle(self) -> int:
-        """ Executes one full cycle of finding, enriching, qualifying, and storing leads. """
-        qualified_leads_added = 0
-
-        # 1. Ensure DataWrapper has API Key
-        # (Re-check/set key each cycle in case ResourceManager state changes)
-        clay_api_key = await self.resource_manager.get_clay_api_key()
-        if not clay_api_key:
-             logger.error(f"AcquisitionAgent {self.agent_id}: Cannot run cycle, failed to get Clay API Key.")
-             return 0
-        self.data_wrapper.set_api_key(clay_api_key)
-
-        # 2. Find Initial Leads (e.g., from a pre-built Clay table)
-        logger.info(f"AcquisitionAgent {self.agent_id}: Finding initial leads...")
-        initial_leads = await self._find_initial_leads(self.target_criteria.get("clay_table_source_id"))
-        if not initial_leads:
-             logger.info(f"AcquisitionAgent {self.agent_id}: No initial leads found in source table. Cycle ending early.")
-             return 0
-        logger.info(f"AcquisitionAgent {self.agent_id}: Found {len(initial_leads)} initial leads.")
-
-        # 3. Enrich Leads (Conceptual / High-Risk - Requires external implementation)
-        logger.info(f"AcquisitionAgent {self.agent_id}: Enriching {len(initial_leads)} leads (conceptual)...")
-        enriched_leads = await self._enrich_leads(initial_leads) # This currently returns input as placeholder
-        logger.info(f"AcquisitionAgent {self.agent_id}: Enrichment step completed (conceptual).")
-
-        # 4. Analyze and Qualify Leads using LLM
-        logger.info(f"AcquisitionAgent {self.agent_id}: Analyzing and qualifying {len(enriched_leads)} leads...")
-        qualified_leads = await self._analyze_and_qualify_leads(enriched_leads)
-        logger.info(f"AcquisitionAgent {self.agent_id}: Found {len(qualified_leads)} qualified leads after analysis.")
-
-        # 5. Store Qualified Leads in Supabase
-        if qualified_leads:
-            logger.info(f"AcquisitionAgent {self.agent_id}: Storing {len(qualified_leads)} qualified leads...")
-            qualified_leads_added = await self._store_qualified_leads(qualified_leads)
-            logger.info(f"AcquisitionAgent {self.agent_id}: Successfully stored {qualified_leads_added} leads in Supabase.")
-        else:
-             logger.info(f"AcquisitionAgent {self.agent_id}: No leads met qualification criteria.")
-
-        # 6. Conceptual: Exploit Social Algorithms / Generate SEO Content
-        # await self._exploit_social_algorithms(qualified_leads)
-        # await self._generate_seo_content(self.target_criteria)
-
-        return qualified_leads_added
+        # Sec-Fetch headers - describe the context of a request
+        headers.update({
+            "Sec-Fetch-Dest": "document", # For page loads. Other values: 'empty', 'script', 'style', 'image', 'font'
+            "Sec-Fetch-Mode": "navigate", # Other values: 'cors', 'no-cors', 'same-origin'
+            "Sec-Fetch-Site": "none",     # For initial navigation. Other values: 'same-origin', 'cross-site'
+            "Sec-Fetch-User": "?1",       # Indicates user activation
+        })
+        
+        # Optional: Add DNT (Do Not Track) header, can be 0 or 1
+        # if random.choice([True, False]):
+        #     headers["DNT"] = str(random.randint(0,1))
 
 
-    async def _find_initial_leads(self, source_table_id: Optional[str]) -> List[Dict[str, Any]]:
-        """
-        Fetches initial lead data, likely by reading rows from a specified Clay table
-        that was populated via Clay's UI or other means.
-        """
-        if not source_table_id:
-             logger.error("Cannot find initial leads: Clay source table ID not specified in target criteria.")
-             return []
+        # Navigator-like properties (simulated)
+        screen_width, screen_height = random.choice(COMMON_SCREEN_RESOLUTIONS)
+        color_depth = random.choice(COMMON_COLOR_DEPTHS)
+        
+        # Hardware concurrency: common values are 2, 4, 8, 12, 16.
+        # More realistic to tie to OS/device type if possible.
+        hw_concurrency_options = [2, 4, 8, 12, 16, 20, 24, 32]
+        if "Android" in final_os or "iOS" in final_os:
+            hw_concurrency_options = [2,4,6,8] # Mobile devices typically have fewer cores reported
+        
+        profile = {
+            "user_agent": user_agent,
+            "headers": headers,
+            "screen": {
+                "width": screen_width,
+                "height": screen_height,
+                "color_depth": color_depth,
+                "pixel_depth": color_depth, # Often same as colorDepth
+                "avail_width": screen_width, # Simplified, usually slightly less
+                "avail_height": screen_height - random.randint(30, 60) # Simplified, taskbar etc.
+            },
+            "navigator": {
+                "language": headers["Accept-Language"].split(',')[0], # Primary language
+                "languages": [lang.split(';')[0] for lang in headers["Accept-Language"].split(',')], # List of languages
+                "platform": final_os, # More specific than Sec-CH-UA-Platform sometimes
+                "device_memory": random.choice([2, 4, 8, 16, 32]), # Conceptual, in GB
+                "hardware_concurrency": random.choice(hw_concurrency_options),
+                "do_not_track": headers.get("DNT", None), # If DNT was added
+                # "plugins": [], # Placeholder, real plugin list is complex
+                # "mime_types": [], # Placeholder
+            },
+            "timezone_offset": -random.randint(0, 12*60), # Minutes from UTC, e.g., UTC-5 = -300. Needs to align with proxy.
+            "notes_for_automation_tool": [
+                "Ensure consistent timezone between IP and browser settings.",
+                "Canvas, WebGL, AudioContext, Fonts, and detailed Plugin data require browser-level APIs to spoof accurately.",
+                "WebRTC IP leakage should be managed (e.g., disable WebRTC or use browser extension)."
+            ]
+        }
+        logger.info(f"Generated fingerprint profile. OS: {final_os}, Browser: {final_browser}, UA: {user_agent}")
+        return profile
 
-        # This assumes the DataWrapper's lookup can be adapted or a 'read_table' method exists.
-        # For now, simulate reading some rows conceptually.
-        # In reality, you'd need to implement pagination or targeted lookups.
-        logger.warning(f"_find_initial_leads needs specific implementation for reading from Clay table '{source_table_id}'. Simulating.")
-        # Example: Simulate reading a few rows that might match criteria conceptually
-        simulated_leads = []
-        for i in range(self.batch_size // 5): # Simulate finding a fraction of the batch size
-             simulated_leads.append({
-                 "id_from_clay": f"clay_lead_{int(time.time()*1000 + i)}",
-                 "Company Name": f"Potential Client Inc {i}",
-                 "Company Domain": f"potential{i}.com",
-                 "Contact Name": f"Decision Maker {i}",
-                 "Contact Email": f"decision.maker{i}@potential{i}.com",
-                 "Contact Title": random.choice(self.target_criteria.get("job_titles", ["VP Sales"])),
-                 "Industry": random.choice(self.target_criteria.get("industries", ["Software"])),
-                 # Add other fields available in your source Clay table
-             })
-        # Replace simulation with actual DataWrapper calls to read from the table
-        # Example (requires DataWrapper method):
-        # initial_leads = await self.data_wrapper.read_table_rows(source_table_id, limit=self.batch_size)
-        return simulated_leads
+# --- Main for testing ---
+async def main_test_fp_advanced():
+    print("Testing FingerprintGenerator (More Advanced)...")
+    fp_gen = FingerprintGenerator() # LLMClient not used in this version
 
-
-    async def _enrich_leads(self, leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Enriches lead data using resourceful methods.
-        **CONCEPTUAL / HIGH-RISK PLACEHOLDER:** Actual implementation would likely
-        involve browser automation to interact with Clay trial accounts or other
-        non-standard data sources, using proxies and generated fingerprints.
-
-        Args:
-            leads: List of lead dictionaries (potentially with basic info).
-
-        Returns:
-            List of lead dictionaries, potentially enriched with more data.
-            (This placeholder currently returns the input unmodified).
-        """
-        logger.warning("Executing CONCEPTUAL lead enrichment step.")
-        enriched_leads_list = []
-        for lead in leads:
-            logger.debug(f"Conceptually enriching lead: {lead.get('Contact Email') or lead.get('Company Name')}")
-            # --- ### START CONCEPTUAL BROWSER AUTOMATION / SCRAPING ### ---
-            # 1. Get resource bundle (proxy, conceptual creds, fingerprint)
-            #    bundle = await self.resource_manager.get_resource_bundle("clay.com") # Or other service
-            #    if not bundle or not bundle.get('credentials') or not bundle.get('proxy_string'):
-            #        logger.error("Failed to get resources for enrichment. Skipping lead.")
-            #        enriched_leads_list.append(lead) # Keep original lead
-            #        continue
-
-            # 2. Instantiate/Use a Browser Automation Wrapper (requires separate implementation)
-            #    browser_wrapper = BrowserAutomationWrapper(proxy=bundle['proxy_string'], fingerprint=bundle['fingerprint_profile'])
-            #    try:
-            #        # Login to conceptual Clay trial account
-            #        await browser_wrapper.login("clay.com", bundle['credentials']['username'], bundle['credentials']['password'])
-            #        # Navigate to enrichment tools, input lead data (e.g., email, domain)
-            #        # Run enrichments, scrape results from the UI
-            #        enrichment_data = await browser_wrapper.enrich_lead_via_clay_ui(lead)
-            #        # Merge enrichment_data back into the lead dictionary
-            #        lead.update(enrichment_data)
-            #        logger.debug("Conceptual enrichment successful.")
-            #    except Exception as e:
-            #         logger.error(f"Conceptual enrichment failed for lead: {e}", exc_info=False)
-            #    finally:
-            #         await browser_wrapper.close()
-            # --- ### END CONCEPTUAL BROWSER AUTOMATION / SCRAPING ### ---
-
-            # Placeholder: Just add a dummy enrichment field
-            lead['enrichment_status'] = "Conceptual Enrichment Placeholder"
-            enriched_leads_list.append(lead)
-            await asyncio.sleep(0.05) # Simulate some processing time
-
-        return enriched_leads_list
-
-    async def _analyze_and_qualify_leads(self, leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """ Uses LLM to analyze enriched leads, score them, and identify angles. """
-        qualified_leads = []
-        for lead in leads:
-            logger.debug(f"Analyzing lead: {lead.get('Contact Email') or lead.get('Company Name')}")
-            # Prepare context for LLM analysis
-            lead_context = json.dumps(lead, indent=2, default=str) # Present lead data clearly
-            prompt = (f"Analyze the following B2B lead data for Boutique AI (specializing in autonomous AI sales agents for {self.target_niche}):\n\n"
-                      f"```json\n{lead_context}\n```\n\n"
-                      f"Based ONLY on the provided data:\n"
-                      f"1. Score the lead's fit (1-10) for needing sales automation/efficiency (Likelihood_Score).\n"
-                      f"2. Briefly state the primary inferred pain point related to sales (Inferred_Pain_Point).\n"
-                      f"3. Suggest a compelling 1-sentence outreach hook tailored to this lead (Outreach_Hook).\n"
-                      f"4. Qualify the lead (True/False) based on a Likelihood_Score >= 6 and presence of relevant job title/industry (Is_Qualified).\n"
-                      f"Return ONLY a valid JSON object with keys: Likelihood_Score (int), Inferred_Pain_Point (str), Outreach_Hook (str), Is_Qualified (bool)."
-                     )
-            messages = [{"role": "user", "content": prompt}]
-            analysis_result_text = await self.llm_client.generate_response(messages=messages, temperature=0.3, use_cache=False) # Low temp for consistent analysis
-
-            if analysis_result_text:
-                try:
-                    analysis = json.loads(analysis_result_text)
-                    if analysis.get("Is_Qualified") is True:
-                         # Add analysis results back to the lead dictionary
-                         lead['likelihood_score'] = analysis.get('Likelihood_Score')
-                         lead['inferred_pain_point'] = analysis.get('Inferred_Pain_Point')
-                         lead['suggested_hook'] = analysis.get('Outreach_Hook')
-                         lead['qualification_status'] = 'Qualified'
-                         qualified_leads.append(lead)
-                         logger.info(f"Lead Qualified: {lead.get('Contact Email') or lead.get('Company Name')}. Score: {lead.get('likelihood_score')}")
-                    else:
-                         logger.debug(f"Lead Not Qualified: {lead.get('Contact Email') or lead.get('Company Name')}. Reason: Low score or failed criteria.")
-                except (json.JSONDecodeError, TypeError, KeyError) as e:
-                     logger.error(f"Failed to parse LLM analysis JSON for lead: {e}. Response: {analysis_result_text[:100]}...")
-            else:
-                 logger.error("LLM analysis failed for lead.")
-            await asyncio.sleep(0.1) # Avoid hitting LLM rate limits too hard
-
-        return qualified_leads
-
-    async def _store_qualified_leads(self, leads: List[Dict[str, Any]]) -> int:
-        """ Stores qualified leads into the Supabase 'contacts' table via CRMWrapper. """
-        added_count = 0
-        for lead in leads:
-            # Map lead data to the expected Supabase 'contacts' table schema
-            # Assumes CRMWrapper handles the actual insert logic
-            contact_data = {
-                "phone_number": lead.get("Contact Phone") or lead.get("Phone Number"), # Find phone number field
-                "email": lead.get("Contact Email") or lead.get("Email"),
-                "first_name": lead.get("Contact Name", "").split(" ")[0] if lead.get("Contact Name") else None,
-                "last_name": " ".join(lead.get("Contact Name", "").split(" ")[1:]) if lead.get("Contact Name") and " " in lead.get("Contact Name") else None,
-                "company_name": lead.get("Company Name"),
-                "title": lead.get("Contact Title"),
-                "source": f"ClayTable_{self.target_criteria.get('clay_table_source_id', 'Unknown')}",
-                "status": "New Qualified Lead",
-                # Store analysis results if table schema supports it (e.g., in a JSONB column)
-                "qualification_details": json.dumps({
-                     "likelihood_score": lead.get('likelihood_score'),
-                     "inferred_pain_point": lead.get('inferred_pain_point'),
-                     "suggested_hook": lead.get('suggested_hook')
-                })
-            }
-            # Remove None values before insertion if table requires it
-            contact_data = {k: v for k, v in contact_data.items() if v is not None}
-
-            # Use CRMWrapper to insert/update contact (CRMWrapper needs implementation for this)
-            # This assumes crm_wrapper has an 'upsert_contact' or similar method.
-            # Using log_call_outcome is incorrect here. Need a dedicated contact creation method.
-            # --- Placeholder for actual contact storage ---
-            logger.warning(f"Storing lead requires a dedicated upsert/insert method in CRMWrapper. Simulating storage for: {contact_data.get('email')}")
-            # success = await self.crm_wrapper.upsert_contact(contact_data, lookup_key='email') # Example
-            success = True # Simulate success
-            # --- End Placeholder ---
-
-            if success:
-                added_count += 1
-            else:
-                 logger.error(f"Failed to store qualified lead {contact_data.get('email')} in Supabase.")
-            await asyncio.sleep(0.05) # Slight delay between inserts
-
-        return added_count
-
-    # --- Conceptual Methods for Advanced Tactics ---
-    async def _exploit_social_algorithms(self, leads: List[Dict[str, Any]]):
-        """ CONCEPTUAL: Analyze social platforms and attempt algorithm exploitation. """
-        logger.warning("_exploit_social_algorithms is conceptual and requires specific implementation.")
-        # 1. Use ResourceManager for proxies/fingerprints.
-        # 2. Use scraping/automation wrapper to analyze target profiles/content on X.com/LinkedIn.
-        # 3. Use LLMClient to determine optimal engagement strategy/timing/content.
-        # 4. Execute engagement via automation wrapper.
-        pass
-
-    async def _generate_seo_content(self, criteria: Dict[str, Any]):
-        """ CONCEPTUAL: Generate niche SEO content targeting AI algorithm understanding. """
-        logger.warning("_generate_seo_content is conceptual and requires specific implementation.")
-        # 1. Use LLMClient with prompts focused on answering complex user queries related to niche/pain points.
-        # 2. Structure content for "answer engine optimization".
-        # 3. Requires separate mechanism for publishing content.
-        pass
-
-    async def _manage_trial_accounts(self, service_name: str):
-        """ CONCEPTUAL: Orchestrate conceptual trial creation/usage. """
-        logger.warning("_manage_trial_accounts is conceptual. Calls high-risk placeholder in ResourceManager.")
-        # This would involve calling resource_manager._get_or_create_conceptual_trial()
-        # and handling the resulting credentials/keys, potentially rotating them.
-        pass
-
-
-# (Conceptual Test Runner)
-async def main():
-    print("Testing AcquisitionAgent (Structure)...")
-    # Requires full dependency setup (Supabase, OpenRouter key, etc.)
-    if not config.SUPABASE_ENABLED or not config.OPENROUTER_API_KEY:
-         print("Skipping test: Supabase or OpenRouter not configured.")
-         return
-
-    try:
-        # Instantiate dependencies
-        llm = LLMClient()
-        crm = CRMWrapper() # Uses Supabase
-        rm = ResourceManager(llm_client=llm) # Uses Supabase, needs LLM for fingerprints
-        dw = DataWrapper() # Needs key set
-
-        # Configure DataWrapper (needs key from RM or config)
-        clay_key = await rm.get_clay_api_key()
-        if clay_key: dw.set_api_key(clay_key)
-        else: print("Warning: Could not get Clay API key for DataWrapper in test."); return
-
-        # Create agent
-        agent = AcquisitionAgent(
-            agent_id="AcqAgent_Test01",
-            resource_manager=rm,
-            data_wrapper=dw,
-            llm_client=llm,
-            crm_wrapper=crm,
-            run_interval_seconds=10 # Short interval for testing
-        )
-
-        print("Starting agent cycle (will run once then stop)...")
-        # Run one cycle for testing instead of the full loop
-        await agent._run_acquisition_cycle()
-        print("Agent cycle finished.")
-
-    except Exception as e:
-        print(f"An error occurred during test: {e}")
+    for i in range(3):
+        print(f"\n--- Profile {i+1} ---")
+        # Test with some variations
+        os = random.choice([None, "Windows", "macOS", "Linux"])
+        browser = random.choice([None, "Chrome", "Firefox", "Safari"])
+        profile = await fp_gen.generate_profile(os_type=os, browser_type=browser)
+        
+        # Print a summary, not the whole thing if too verbose
+        print(f"  User-Agent: {profile['user_agent']}")
+        print(f"  OS: {profile['navigator']['platform']}")
+        print(f"  Screen: {profile['screen']['width']}x{profile['screen']['height']}")
+        print(f"  Accept-Language: {profile['headers']['Accept-Language']}")
+        print(f"  Sec-CH-UA: {profile['headers'].get('Sec-CH-UA')}")
+        # print(json.dumps(profile, indent=2)) # Uncomment for full profile
 
 if __name__ == "__main__":
+    # To run this test:
+    # 1. Ensure async environment.
+    # 2. Optionally install fake_useragent: pip install fake-useragent
+    # Example:
     # import asyncio
-    # import config # Ensure config is loaded
-    # asyncio.run(main()) # Uncomment to run test (requires async context and all services configured)
-    print("AcquisitionAgent structure defined. Run test manually in an async context.")
-
+    # asyncio.run(main_test_fp_advanced())
+    print("FingerprintGenerator (More Advanced Stub) defined. Run test manually.")

@@ -2,286 +2,269 @@
 
 import logging
 import json
-import time # Keep for potential future use (e.g., rate limiting delays)
+import asyncio
 from typing import Optional, Dict, List, Any
-import requests # Using requests for direct API calls
+import aiohttp # For asynchronous HTTP requests
 
-# Import configuration centrally
-from config import CLAY_API_BASE_URL # Using configured base URL
+# Assuming config.py is at the project root
+# import config # Not strictly needed if webhook URLs are passed directly
 
 logger = logging.getLogger(__name__)
 
+class ClayWebhookError(Exception):
+    """Custom exception for errors sending data to Clay webhooks."""
+    def __init__(self, message, status_code=None, response_text=None, webhook_url_snippet=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_text = response_text
+        self.webhook_url_snippet = webhook_url_snippet
+
+    def __str__(self):
+        return f"{super().__str__()} (Status: {self.status_code}, URL Snippet: {self.webhook_url_snippet}, Response: {self.response_text[:100] if self.response_text else 'N/A'})"
+
 class DataWrapper:
     """
-    Wrapper for interacting with Clay.com's API via direct HTTP requests,
-    focusing on table-specific operations like lookups and writes, using an API key.
-    Requires user to have tables set up in their Clay account and to verify/adjust
-    the specific API endpoints and payload structures used.
+    Wrapper for sending data TO Clay.com tables via their specific Webhook URLs.
+    Based on Clay documentation indicating webhooks are the primary method for
+    programmatic data input.
     """
 
-    def __init__(self):
-        """
-        Initializes the data wrapper. API key is set dynamically before use.
-        """
-        self.session = requests.Session() # Use a session for potential reuse
-        self.session.headers.update({
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        })
-        # Authentication header (API Key) will be set dynamically via set_api_key
-        self.api_key: Optional[str] = None
-        # Use base URL from config, ensure it's correctly set in .env
-        self.base_url = CLAY_API_BASE_URL
-        logger.info(f"DataWrapper initialized for Clay.com (Base URL: {self.base_url}). API key needs to be set.")
+    _http_session: Optional[aiohttp.ClientSession] = None # Class-level shared session
 
-    def set_api_key(self, api_key: Optional[str]):
+    def __init__(self):
+        # API key from config.CLAY_API_KEY might be used if Clay webhooks
+        # are configured to require an 'x-clay-webhook-auth' header.
+        # self.clay_auth_token = config.CLAY_API_KEY # If using x-clay-webhook-auth
+        logger.info("DataWrapper initialized for sending data via Webhooks to Clay.com.")
+
+    @classmethod
+    async def _get_session(cls) -> aiohttp.ClientSession:
+        """Initializes or returns the shared aiohttp session."""
+        if cls._http_session is None or cls._http_session.closed:
+            # You can configure connector limits here if needed
+            # connector = aiohttp.TCPConnector(limit_per_host=config.MAX_CONCURRENT_CLAY_REQUESTS or 10)
+            # cls._http_session = aiohttp.ClientSession(connector=connector)
+            cls._http_session = aiohttp.ClientSession()
+            logger.info("Initialized shared aiohttp.ClientSession for DataWrapper.")
+        return cls._http_session
+
+    @classmethod
+    async def close_session(cls):
+        """Closes the shared aiohttp session. Call during application shutdown."""
+        if cls._http_session and not cls._http_session.closed:
+            await cls._http_session.close()
+            cls._http_session = None
+            logger.info("Closed shared aiohttp.ClientSession for DataWrapper.")
+
+    async def send_data_to_clay_webhook(
+        self,
+        webhook_url: str,
+        data_payload: Dict[str, Any],
+        # Optional: if you configure 'x-clay-webhook-auth' in Clay for the webhook
+        # clay_auth_token: Optional[str] = None,
+        timeout_seconds: int = 30
+    ) -> bool:
         """
-        Sets the Clay.com API key found in user settings for subsequent requests.
+        Sends a single data record (JSON payload) to a specific Clay table's webhook URL.
 
         Args:
-            api_key: The Clay.com API key.
+            webhook_url: The unique webhook URL for the target Clay table.
+                         (Found in Clay UI: Table -> Import -> Monitor Webhook)
+            data_payload: The dictionary representing the data record to send.
+                          Keys should match expected input fields for the Clay table.
+            timeout_seconds: Request timeout in seconds.
+
+        Returns:
+            True if the request was accepted by Clay (typically 200 OK), False otherwise.
+        Raises:
+            ClayWebhookError: If the request fails significantly or returns an unexpected status.
         """
-        if api_key:
-            self.api_key = api_key
-            # Assuming Clay uses a standard Bearer token scheme based on common practice.
-            # ** VERIFY THIS AUTHENTICATION METHOD **
-            auth_header = f"Bearer {self.api_key}"
-            self.session.headers.update({"Authorization": auth_header})
-            logger.info("Clay.com API key set for DataWrapper.")
-            logger.debug(f"Clay API Key (masked): {self.api_key[:4]}...{self.api_key[-4:]}")
-        else:
-             self.api_key = None
-             # Remove auth header if key is removed or invalid
-             if "Authorization" in self.session.headers:
-                  del self.session.headers["Authorization"]
-             logger.warning("Clay.com API key removed or not provided to DataWrapper.")
+        if not webhook_url or not webhook_url.startswith("https://hooks.clay.com/"):
+            msg = "Invalid or missing Clay webhook_url."
+            logger.error(msg)
+            raise ValueError(msg)
+        if not data_payload:
+            msg = "data_payload cannot be empty for Clay webhook."
+            logger.error(msg)
+            raise ValueError(msg)
 
+        session = await self._get_session()
+        url_snippet = webhook_url[:30] + "..." + webhook_url[-10:]
+        log_payload_summary = json.dumps(data_payload)[:150] + ("..." if len(json.dumps(data_payload)) > 150 else "")
+        logger.info(f"Sending data to Clay Webhook: {url_snippet} Payload: {log_payload_summary}")
 
-    def _make_request(
-        self,
-        method: str,
-        endpoint: str,
-        params: Optional[Dict] = None,
-        data: Optional[Dict] = None
-        ) -> Optional[Dict[str, Any]]:
-        """
-        Internal helper to make HTTP requests to the Clay.com API.
-        Handles actual network request, error checking, and JSON parsing.
-        """
-        if not self.api_key:
-            logger.error("Cannot make Clay API request: API key not set.")
-            return None
+        headers = {"Content-Type": "application/json"}
+        # if clay_auth_token: # If you set up x-clay-webhook-auth in Clay
+        #     headers["x-clay-webhook-auth"] = clay_auth_token
+        # elif config.CLAY_API_KEY: # Fallback to global key if webhook needs it
+        #     logger.debug("Using global CLAY_API_KEY for x-clay-webhook-auth header (if webhook is configured to need it).")
+        #     headers["x-clay-webhook-auth"] = config.CLAY_API_KEY
 
-        # Ensure URL is formed correctly
-        url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
-        # Prepare JSON data payload if provided
-        json_data_payload = json.dumps(data) if data else None
-
-        logger.debug(f"Making Clay API Request: {method.upper()} {url}")
-        if params: logger.debug(f"  Params: {params}")
-        if json_data_payload: logger.debug(f"  Data: {json_data_payload[:500]}...") # Log truncated data
 
         try:
-            response = self.session.request(
-                method=method.upper(),
-                url=url,
-                params=params,
-                data=json_data_payload, # Send JSON string in data field
-                timeout=30 # Allow reasonable timeout for data operations
-            )
-            # Raise an exception for bad status codes (4xx or 5xx)
-            response.raise_for_status()
+            async with session.post(
+                webhook_url,
+                json=data_payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds)
+            ) as response:
+                response_text = await response.text()
 
-            # Handle successful responses
-            if response.status_code == 204: # No Content
-                 logger.info(f"Clay API Request successful ({response.status_code} No Content).")
-                 return {} # Indicate success with no body
+                # Clay webhooks typically return 200 OK on successful receipt.
+                # Some might return 202 Accepted. VERIFY this.
+                if response.status in [200, 201, 202, 204]:
+                    logger.info(f"Data successfully sent to Clay webhook {url_snippet}. Status: {response.status}")
+                    logger.debug(f"Clay webhook response body for {url_snippet}: {response_text[:500]}")
+                    return True
+                else:
+                    err_msg = f"Error sending data to Clay webhook {url_snippet}. Status: {response.status}."
+                    logger.error(f"{err_msg} Response: {response_text[:500]}")
+                    raise ClayWebhookError(err_msg, status_code=response.status, response_text=response_text, webhook_url_snippet=url_snippet)
 
-            # Attempt to parse JSON response for other success codes (e.g., 200 OK, 201 Created)
-            response_json = response.json()
-            logger.debug(f"Clay API Response ({response.status_code}): {str(response_json)[:500]}...")
-            return response_json
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout sending to Clay webhook {url_snippet} after {timeout_seconds}s.")
+            raise ClayWebhookError("Request timed out", status_code=408, webhook_url_snippet=url_snippet)
+        except aiohttp.ClientError as e: # Covers ClientConnectorError, ServerDisconnectedError etc.
+            logger.error(f"AIOHTTP client error sending to Clay webhook {url_snippet}: {e}", exc_info=True)
+            raise ClayWebhookError(f"HTTP Client error: {e}", webhook_url_snippet=url_snippet) from e
+        except Exception as e: # Catch-all for other unexpected errors
+            logger.error(f"Unexpected error sending to Clay webhook {url_snippet}: {e}", exc_info=True)
+            raise ClayWebhookError(f"Unexpected error: {e}", webhook_url_snippet=url_snippet) from e
 
-        except requests.exceptions.HTTPError as e:
-            # Log detailed HTTP errors
-            logger.error(f"Clay API HTTP Error: {e.response.status_code} {e.response.reason} for {method.upper()} {url}")
-            try:
-                # Try to get more specific error info from response body
-                error_details = e.response.json()
-                logger.error(f"  Error details from API: {error_details}")
-            except json.JSONDecodeError:
-                # Log raw text if response is not JSON
-                logger.error(f"  Error body (non-JSON): {e.response.text[:500]}...")
-            return None # Indicate failure
-        except requests.exceptions.RequestException as e:
-            # Handle other request errors (connection, timeout, etc.)
-            logger.error(f"Clay API Request Failed ({method.upper()} {url}): {e}", exc_info=True)
-            return None
-        except json.JSONDecodeError as e:
-             # Handle errors parsing a successful (e.g., 200 OK) response
-             logger.error(f"Failed to decode apparently successful Clay API JSON response ({response.status_code}) from {method.upper()} {url}: {e}")
-             logger.debug(f"Raw Response Text: {response.text[:500]}...")
-             return None # Indicate failure to parse
-
-
-    async def lookup_row_in_table(
+    async def send_batch_to_clay_webhook(
         self,
-        table_id: str,
-        lookup_column_header: str,
-        lookup_value: Any, # Value can be string, number etc.
-        select_columns: Optional[List[str]] = None
-        ) -> Optional[Dict[str, Any]]:
+        webhook_url: str,
+        batch_records: List[Dict[str, Any]],
+        concurrent_sends: int = 5,
+        delay_between_sends_ms: int = 100
+    ) -> tuple[int, int]:
         """
-        Looks up a SINGLE row in a specific Clay table based on a column value.
-        **NOTE:** The specific endpoint and payload structure are HYPOTHETICAL
-        and MUST be verified against actual Clay.com API behavior.
+        Sends a batch of data records to a Clay webhook, one request per record, with concurrency.
 
         Args:
-            table_id: The ID of the Clay table (e.g., 't_xxxxxxxx').
-            lookup_column_header: The exact header/name of the column to match against.
-            lookup_value: The value to search for in the lookup column.
-            select_columns: Optional list of column headers to return. If None, returns all accessible.
+            webhook_url: The unique webhook URL for the target Clay table.
+            batch_records: A list of dictionaries, each representing a record.
+            concurrent_sends: Max number of concurrent POST requests.
+            delay_between_sends_ms: Delay in milliseconds between starting each request.
 
         Returns:
-            A dictionary representing the found row's data (keys are column headers),
-            or None if not found or an error occurs.
+            A tuple (successful_sends, failed_sends).
         """
-        if not table_id or not lookup_column_header:
-             logger.error("lookup_row_in_table requires table_id and lookup_column_header.")
-             return None
+        if not webhook_url: raise ValueError("webhook_url must be provided.")
+        if not batch_records: return (0, 0)
 
-        logger.info(f"Looking up row in Clay table '{table_id}' where '{lookup_column_header}' matches value.")
-        if not self.api_key: return None # Ensure API key is set
+        success_count = 0
+        fail_count = 0
+        tasks = []
+        # Semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(concurrent_sends)
+        url_snippet = webhook_url[:30] + "..." + webhook_url[-10:]
 
-        # --- ### START HYPOTHETICAL CLAY API IMPLEMENTATION ### ---
-        # This endpoint structure is a guess based on common patterns and documented key capabilities.
-        # It assumes a POST request for lookup flexibility. VERIFY THIS.
-        endpoint = f"/tables/{table_id}/rows/lookup" # HYPOTHETICAL ENDPOINT
-        payload = {
-            "filter": {
-                "column": lookup_column_header,
-                "value": lookup_value # Send the value directly
-            },
-            "limit": 1 # We only want the first match for a single lookup
-        }
-        if select_columns:
-            payload["select"] = select_columns
+        async def _send_one_record_with_semaphore(record_data: Dict[str, Any]):
+            nonlocal success_count, fail_count
+            async with semaphore:
+                try:
+                    # The send_data_to_clay_webhook now raises on error, so we catch it.
+                    await self.send_data_to_clay_webhook(webhook_url, record_data)
+                    success_count += 1
+                except ClayWebhookError as e: # Catch specific errors from the send function
+                    logger.warning(f"Failed to send record to {url_snippet} due to ClayWebhookError: {e}")
+                    fail_count += 1
+                except Exception as e: # Catch any other unexpected errors during the send_one_record task
+                     logger.error(f"Unexpected error processing record in batch send to {url_snippet}: {record_data.get('id', 'N/A')}", exc_info=True)
+                     fail_count += 1
+                # Apply delay *after* request attempt, before releasing semaphore for next task effectively
+                if delay_between_sends_ms > 0:
+                    await asyncio.sleep(delay_between_sends_ms / 1000.0)
 
-        logger.warning(f"lookup_row_in_table using HYPOTHETICAL endpoint '{endpoint}' and payload structure. VERIFY!")
+        logger.info(f"Sending batch of {len(batch_records)} records to Clay webhook {url_snippet}. "
+                    f"Concurrency: {concurrent_sends}, Delay: {delay_between_sends_ms}ms")
 
-        # Make the actual API call (asynchronously if needed, but using sync requests here)
-        # Consider wrapping _make_request in asyncio.to_thread if calling from async code frequently
-        response_data = self._make_request("POST", endpoint, data=payload)
+        for i, record in enumerate(batch_records):
+            # Add a unique identifier to the record if it doesn't have one, for better tracking
+            if "_batch_item_id" not in record:
+                record["_batch_item_id"] = f"batch_item_{i}"
+            tasks.append(_send_one_record_with_semaphore(record))
 
-        # Parse the response - This structure is also HYPOTHETICAL
-        if response_data and isinstance(response_data.get("results"), list):
-            results = response_data["results"]
-            if len(results) > 0:
-                found_row = results[0] # Assume first result is the one we want
-                logger.info(f"Found row in table '{table_id}'.")
-                # Ensure the result is a dictionary (representing the row data)
-                return found_row if isinstance(found_row, dict) else None
-            else:
-                logger.info(f"No row found in table '{table_id}' matching criteria.")
-                return None # Explicitly return None for not found
-        elif response_data is not None: # Request succeeded but unexpected format or no results field
-             logger.warning(f"Clay lookup request succeeded but response format unexpected or empty: {response_data}")
-             return None
-        else: # Request failed entirely
-             logger.error(f"Failed to lookup row in table '{table_id}' due to API request error.")
-             return None
-        # --- ### END HYPOTHETICAL CLAY API IMPLEMENTATION ### ---
+        await asyncio.gather(*tasks, return_exceptions=False) # Errors are handled within _send_one_record
 
+        logger.info(f"Batch send to Clay webhook {url_snippet} complete. "
+                    f"Total: {len(batch_records)}, Success: {success_count}, Failed: {fail_count}")
+        return success_count, fail_count
 
-    async def write_row_to_table(self, table_id: str, row_data: Dict[str, Any]) -> bool:
-        """
-        Writes (appends) a new row to a specific Clay table.
-        **NOTE:** The specific endpoint and payload structure are HYPOTHETICAL
-        and MUST be verified against actual Clay.com API behavior. This assumes append-only.
-        Update logic might require a different endpoint or method (e.g., PATCH).
+# --- Main for testing ---
+async def main_test_dw_webhook_researched():
+    print("Testing DataWrapper (Clay.com Webhook Implementation - Researched)...")
 
-        Args:
-            table_id: The ID of the Clay table (e.g., 't_xxxxxxxx').
-            row_data: A dictionary where keys are exact column headers and values are cell values.
+    # !!! IMPORTANT: Get this from your Clay table's settings !!!
+    # In Clay: Open your table -> Click "Import" (or "+ Add Source" then "Monitor Webhook") -> Copy the Webhook URL.
+    TEST_CLAY_TABLE_WEBHOOK_URL = os.getenv("TEST_CLAY_TABLE_WEBHOOK_URL_FROM_ENV") # Get from .env for testing
+    # Example .env entry:
+    # TEST_CLAY_TABLE_WEBHOOK_URL_FROM_ENV="https://hooks.clay.com/v1/workflows/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/sync"
 
-        Returns:
-            True if the write operation was likely successful (e.g., 200 OK or 201 Created), False otherwise.
-        """
-        if not table_id or not row_data:
-             logger.error("write_row_to_table requires table_id and non-empty row_data.")
-             return False
-
-        logger.info(f"Writing row to Clay table '{table_id}'...")
-        if not self.api_key: return False
-
-        # --- ### START HYPOTHETICAL CLAY API IMPLEMENTATION ### ---
-        # This endpoint structure is a guess. Assumes POST to add a new row.
-        endpoint = f"/tables/{table_id}/rows" # HYPOTHETICAL ENDPOINT
-        # Payload structure might be simple like {"columns": row_data} or just row_data
-        payload = row_data # Simplest assumption - VERIFY THIS
-        logger.warning(f"write_row_to_table using HYPOTHETICAL endpoint '{endpoint}' and payload structure. VERIFY!")
-
-        # Make the actual API call
-        response_data = self._make_request("POST", endpoint, data=payload)
-
-        # Check response - Success might be 200 OK, 201 Created, or 204 No Content
-        # We consider any non-None response (meaning no request/HTTP error) as potential success here.
-        # A more robust check would inspect response_data for specific success indicators if available.
-        if response_data is not None:
-            logger.info(f"Write request to table '{table_id}' completed (Status Code implies success).")
-            # Optionally check response_data for specific confirmation if API provides it
-            # e.g., if response_data.get("status") == "success": return True
-            return True
-        else:
-            logger.error(f"Failed to write row to table '{table_id}' due to API request error.")
-            return False
-        # --- ### END HYPOTHETICAL CLAY API IMPLEMENTATION ### ---
-
-
-# (Conceptual Test Runner - Keep as is for structure demonstration)
-async def main():
-    print("Testing DataWrapper (Clay.com Functional - Table Interaction v3)...")
-    # Requires CLAY_API_KEY in .env and knowledge of actual table/column IDs
-    import config # Load config
-    if not config.CLAY_API_KEY:
-         print("Skipping test: CLAY_API_KEY environment variable not set.")
-         return
+    if not TEST_CLAY_TABLE_WEBHOOK_URL or \
+       "YOUR_UNIQUE_WEBHOOK_ID" in TEST_CLAY_TABLE_WEBHOOK_URL or \
+       "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" in TEST_CLAY_TABLE_WEBHOOK_URL: # Check for placeholder
+        print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("!!! CRITICAL: Set TEST_CLAY_TABLE_WEBHOOK_URL_FROM_ENV in your .env file  !!!")
+        print("!!! with YOUR REAL Clay table webhook URL before running this test.       !!!")
+        print("!!! Find it in Clay: Table -> Import -> Monitor Webhook.                  !!!")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
+        return
 
     wrapper = DataWrapper()
-    wrapper.set_api_key(config.CLAY_API_KEY)
 
-    # --- Replace with ACTUAL Table ID and Column Names from YOUR Clay account ---
-    TEST_TABLE_ID = "t_YOUR_TABLE_ID_HERE" # e.g., t_abc123xyz
-    LOOKUP_COLUMN = "Company Domain"       # e.g., Email, LinkedIn URL, Company Domain
-    LOOKUP_VALUE = "example.com"           # Value to search for
-    WRITE_COLUMN_1 = "Lead Status"         # Column to write to
-    WRITE_COLUMN_2 = "Timestamp Added"     # Another column to write to
-    # --- ---
-
-    print(f"\nLooking up row in table '{TEST_TABLE_ID}' where '{LOOKUP_COLUMN}'='{LOOKUP_VALUE}'")
-    # Note: Use await if calling from async context, otherwise adapt _make_request or use sync wrapper
-    # For simplicity in example, assuming sync call here, but use await in real async code
-    # row = wrapper.lookup_row_in_table(TEST_TABLE_ID, LOOKUP_COLUMN, LOOKUP_VALUE) # Sync version needed for this test block if not async
-    # --- Using await as main is async ---
-    row = await wrapper.lookup_row_in_table(TEST_TABLE_ID, LOOKUP_COLUMN, LOOKUP_VALUE)
-    if row is not None:
-        print(f"Lookup result (requires real API & table): {row}")
-    else:
-        print("Lookup failed or not found (requires real API & table).")
-
-    print(f"\nWriting row to table '{TEST_TABLE_ID}'")
-    write_data = {
-        LOOKUP_COLUMN: f"new_company_{int(time.time())}.com", # Ensure lookup column has value
-        WRITE_COLUMN_1: "New Lead",
-        WRITE_COLUMN_2: datetime.utcnow().isoformat()
+    print(f"\n--- Sending Single Record to Webhook: {TEST_CLAY_TABLE_WEBHOOK_URL[:50]}... ---")
+    # Payload keys MUST match the input fields expected by your Clay table's workflow
+    # For example, if your Clay table starts with a "Find Company from Domain" enrichment:
+    single_payload = {
+        "domain": f"testdomain{int(time.time())}.com", # Clay will use this as input
+        "company_name_guess": f"Test Corp {int(time.time())}", # Additional data
+        "source_reference": "dw_single_test"
     }
-    # success = wrapper.write_row_to_table(TEST_TABLE_ID, write_data) # Sync version
-    # --- Using await ---
-    success = await wrapper.write_row_to_table(TEST_TABLE_ID, write_data)
-    print(f"Write successful (requires real API & table): {success}")
+    try:
+        success = await wrapper.send_data_to_clay_webhook(TEST_CLAY_TABLE_WEBHOOK_URL, single_payload)
+        print(f"Single send successful: {success}")
+        if success: print("Check your Clay table. The workflow should have run for this new row.")
+    except ClayWebhookError as e:
+        print(f"Single send failed: {e}")
+    except Exception as e:
+        print(f"Unexpected error during single send test: {e}", exc_info=True)
+
+    print(f"\n--- Sending Batch Records to Webhook: {TEST_CLAY_TABLE_WEBHOOK_URL[:50]}... ---")
+    batch_payload = []
+    for i in range(3): # Create 3 sample records
+        batch_payload.append({
+            "domain": f"batchdomain{int(time.time()) + i}.com",
+            "company_name_guess": f"Batch Corp {chr(65+i)}", # A, B, C
+            "source_reference": f"dw_batch_test_{i}"
+        })
+    try:
+        success_count, fail_count = await wrapper.send_batch_to_clay_webhook(
+            TEST_CLAY_TABLE_WEBHOOK_URL,
+            batch_payload,
+            concurrent_sends=2,
+            delay_between_sends_ms=200
+            )
+        print(f"Batch send complete. Success: {success_count}, Failed: {fail_count}")
+        if success_count > 0: print("Check your Clay table for the new rows.")
+    except Exception as e:
+        print(f"Unexpected error during batch send test: {e}", exc_info=True)
+
+    await DataWrapper.close_session() # Important to close the session when done
 
 if __name__ == "__main__":
+    # To run this test:
+    # 1. Ensure async environment.
+    # 2. `config.py` accessible.
+    # 3. Create a table in Clay.com, configure its workflow (e.g., accept 'domain', 'company_name_guess').
+    # 4. Go to the table settings in Clay (Import -> Monitor Webhook) and get its unique Webhook URL.
+    # 5. Add this URL to your .env file as TEST_CLAY_TABLE_WEBHOOK_URL_FROM_ENV="your_clay_webhook_url"
+    # 6. Install aiohttp: pip install aiohttp
+    # Example:
     # import asyncio
-    # asyncio.run(main()) # Uncomment to run test (requires valid config, async context, and configured Clay table)
-    print("DataWrapper structure defined (Functional Table Interaction v3). Requires valid Clay API key and user-configured tables/verified endpoints for real use.")
-
+    # load_dotenv() # Make sure .env is loaded if running this file directly for tests
+    # asyncio.run(main_test_dw_webhook_researched())
+    print("DataWrapper (Clay.com Webhook - Researched) defined. "
+          "YOU MUST SET UP a Clay table, get its webhook URL, and put it in your .env "
+          "as TEST_CLAY_TABLE_WEBHOOK_URL_FROM_ENV to run the test. Run test manually.")
