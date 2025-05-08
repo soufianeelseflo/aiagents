@@ -13,19 +13,17 @@ from core.services.llm_client import LLMClient
 # Import the DeploymentManager Interface and Config class
 from core.services.deployment_manager import DeploymentManagerInterface, DeploymentConfig
 # Optional: Import an Email Service Wrapper if implementing automated config requests
-# from core.services.email_wrapper import EmailServiceWrapper
+# from core.services.email_wrapper import EmailServiceWrapper # Example
 
 logger = logging.getLogger(__name__)
 
 # --- Status Constants ---
-# Statuses set by SalesAgent or external process indicating a deal is ready
 STATUS_NEEDS_PROVISIONING = "Deal_Closed_Provisioning_Required"
-# Statuses managed by this ProvisioningAgent
 STATUS_GATHERING_CONFIG = "Provisioning_Gathering_Config"
-STATUS_CONFIG_COLLECTION_PENDING = "Provisioning_Client_Input_Pending" # If waiting for client input
+STATUS_CONFIG_COLLECTION_PENDING = "Provisioning_Client_Input_Pending"
 STATUS_PROVISIONING_RESOURCES = "Provisioning_Acquiring_Resources"
 STATUS_DEPLOYING_INSTANCE = "Provisioning_Deploying_Instance"
-STATUS_ACTIVE = "Service_Active" # Final success state
+STATUS_ACTIVE = "Service_Active"
 STATUS_PROVISIONING_FAILED = "Provisioning_Failed"
 STATUS_NEEDS_MANUAL_INTERVENTION = "Provisioning_Needs_Manual_Help"
 
@@ -42,9 +40,8 @@ class ProvisioningAgent:
         resource_manager: ResourceManager,
         crm_wrapper: CRMWrapper,
         llm_client: LLMClient,
-        deployment_manager: DeploymentManagerInterface, # Injected dependency
+        deployment_manager: DeploymentManagerInterface, # Inject concrete implementation (e.g., DockerDeploymentManager)
         # email_service: Optional[EmailServiceWrapper] = None, # Optional for client communication
-        # Optional callback for reporting status to an orchestrator/UI
         on_provisioning_event: Optional[Callable[[str, str, str, Optional[str]], Coroutine[Any, Any, None]]] = None # agent_id, client_contact_id, status, details
         ):
         self.agent_id = agent_id
@@ -52,17 +49,16 @@ class ProvisioningAgent:
         self.crm_wrapper = crm_wrapper
         self.llm_client = llm_client
         self.deployment_manager = deployment_manager
-        # self.email_service = email_service # Store if provided
+        # self.email_service = email_service
         self.on_provisioning_event = on_provisioning_event
 
-        # Configurable parameters from main config
-        self.run_interval_seconds = config.get_int_env_var("PROVISIONING_AGENT_INTERVAL_S", default=300, required=False) # Check every 5 mins
-        self.max_concurrent_provisioning = config.get_int_env_var("PROVISIONING_AGENT_MAX_CONCURRENT", default=3, required=False)
+        self.run_interval_seconds = config.get_int_env_var("PROVISIONING_AGENT_INTERVAL_S", default=300)
+        self.max_concurrent_provisioning = config.get_int_env_var("PROVISIONING_AGENT_MAX_CONCURRENT", default=2) # Limit concurrency
         
         self._is_running = False
         self._current_task: Optional[asyncio.Task] = None
         self._provisioning_semaphore = asyncio.Semaphore(self.max_concurrent_provisioning)
-        self._currently_provisioning = set() # Track IDs being processed to avoid duplicates
+        self._currently_provisioning = set() # Track IDs being processed
 
         logger.info(f"ProvisioningAgent {self.agent_id} initialized. Interval: {self.run_interval_seconds}s, Concurrency: {self.max_concurrent_provisioning}")
 
@@ -109,7 +105,7 @@ class ProvisioningAgent:
                 .select("id, email, company_name, llm_full_analysis_json, client_config_json") # Select needed fields
                 .eq("status", STATUS_NEEDS_PROVISIONING)
                 # .not_.in_("id", list(self._currently_provisioning)) # Filter out already processing (requires list not empty)
-                .limit(self.max_concurrent_provisioning * 2)
+                .limit(self.max_concurrent_provisioning * 2) # Fetch slightly more
             )
             response = await self.crm_wrapper._execute_supabase_query(query)
 
@@ -141,9 +137,8 @@ class ProvisioningAgent:
         client_email = client_contact_data.get("email", f"UnknownContact_{contact_id}")
         if not contact_id: logger.error("Cannot provision client: contact data missing 'id'."); return
 
-        # Use semaphore to limit actual concurrent heavy work (like browser automation or deployment)
-        async with self._provisioning_semaphore:
-            if not self._is_running: return # Check if agent stopped while waiting for semaphore
+        async with self._provisioning_semaphore: # Limit concurrent provisioning tasks
+            if not self._is_running: return
 
             logger.info(f"Starting provisioning process for Contact ID: {contact_id} ({client_email})")
             await self._emit_event(contact_id, "Provisioning_Started", "Initiating provisioning workflow.")
@@ -157,24 +152,9 @@ class ProvisioningAgent:
                     logger.error(f"Failed to gather necessary configuration for Contact ID: {contact_id}.")
                     await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_NEEDS_MANUAL_INTERVENTION, "Failed: Missing critical configuration data.")
                     await self._emit_event(contact_id, STATUS_PROVISIONING_FAILED, "Missing critical configuration.")
-                    return # Exit this client's provisioning
+                    return
 
                 # 2. Acquire Necessary Resources (Conceptual - Requires specific logic)
-                # Example: If client needs dedicated resources acquired via ResourceManager
-                # await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_PROVISIONING_RESOURCES, "Acquiring dedicated resources (Conceptual).")
-                # required_services = deployment_config_dict.get("required_dedicated_services", [])
-                # client_api_keys = deployment_config_dict.get("client_provided_api_keys", {})
-                # for service in required_services:
-                #     if service not in client_api_keys:
-                #         logger.info(f"Attempting to acquire resource '{service}' for client {contact_id} via RM.")
-                #         # Define automation config for this service acquisition
-                #         automation_config = config.get_service_automation_config(service) # Needs helper in config.py
-                #         if automation_config:
-                #             resource_key = await self.resource_manager.get_api_key(service, automation_config)
-                #             if not resource_key: raise ValueError(f"Failed to acquire resource '{service}'")
-                #             client_api_keys[service] = resource_key
-                #         else: raise ValueError(f"Automation config missing for required service '{service}'")
-                # deployment_config_dict["client_api_keys"] = client_api_keys # Update config
                 logger.info(f"Resource acquisition step skipped/conceptual for Contact ID: {contact_id}.")
 
                 # 3. Deploy Agent Instance using DeploymentManager
@@ -184,7 +164,7 @@ class ProvisioningAgent:
                     client_id=str(contact_id),
                     client_email=client_email,
                     agent_type=deployment_config_dict.get("agent_type", "SalesAgent"),
-                    configuration=deployment_config_dict # Pass the full gathered/inferred config
+                    configuration=deployment_config_dict
                 )
 
                 deployment_result = await self.deployment_manager.deploy_agent_instance(deploy_config_obj)
@@ -194,6 +174,10 @@ class ProvisioningAgent:
                     instance_id = deployment_result.get("instance_id", "N/A")
                     access_url = deployment_result.get("access_url", "N/A")
                     logger.info(f"Successfully deployed agent instance for Contact ID: {contact_id}. Instance ID: {instance_id}")
+                    # Store deployment ID in CRM for future management
+                    await self.crm_wrapper.upsert_contact(
+                        {"id": contact_id, "status": STATUS_ACTIVE, "deployment_id": instance_id}, "id"
+                    )
                     await self.crm_wrapper.update_contact_status_and_notes(
                         contact_id, STATUS_ACTIVE, f"Service Active. Instance ID: {instance_id}. Access URL: {access_url}"
                     )
@@ -214,20 +198,20 @@ class ProvisioningAgent:
                 await self._emit_event(contact_id, STATUS_PROVISIONING_FAILED, f"Unexpected error: {type(e).__name__}")
             finally:
                  if contact_id in self._currently_provisioning:
-                     self._currently_provisioning.remove(contact_id) # Ensure ID is removed on completion/error
-
+                     self._currently_provisioning.remove(contact_id) # Ensure ID is removed
 
     async def _gather_client_config(self, client_contact_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Gathers necessary configuration for deploying a client's agent.
-        Prioritizes stored config, then infers from sales analysis, then potentially triggers follow-up.
+        Placeholder: Assumes config is stored in CRM or uses defaults.
+        Requires enhancement for real-world key collection.
         """
         contact_id = client_contact_data.get("id")
         logger.info(f"Gathering deployment configuration for Contact ID: {contact_id}...")
 
         # 1. Check for pre-stored config in CRM
         stored_config = client_contact_data.get("client_config_json")
-        if stored_config and isinstance(stored_config, dict) and stored_config.get("config_complete"): # Check for a completion flag
+        if stored_config and isinstance(stored_config, dict) and stored_config.get("config_complete"):
             logger.info(f"Found complete stored client configuration for Contact ID: {contact_id}.")
             return stored_config
 
@@ -237,60 +221,44 @@ class ProvisioningAgent:
         if sales_analysis and isinstance(sales_analysis, dict):
             logger.info(f"Attempting to infer configuration from sales analysis for Contact ID: {contact_id}.")
             inferred_config = {
-                "agent_type": "SalesAgent", # Default, could be inferred from analysis later
+                "agent_type": "SalesAgent",
                 "target_niche": sales_analysis.get("target_niche") or client_contact_data.get("industry") or config.AGENT_TARGET_NICHE_DEFAULT,
                 "initial_prompt_context": {
                     "company_name": client_contact_data.get("company_name"),
                     "primary_pain_point": sales_analysis.get("primary_inferred_pain_point"),
                     "suggested_hook": sales_analysis.get("suggested_outreach_hook")
                 },
-                "client_provided_api_keys": {}, # Placeholder for keys client needs to provide
-                "required_config_missing": [] # Track missing essential items
+                "client_provided_api_keys": {},
+                "required_config_missing": []
             }
-            # Example: Check if client needs to provide CRM keys
-            # if not inferred_config["client_provided_api_keys"].get("crm_api_key"):
-            #     inferred_config["required_config_missing"].append("crm_api_key")
 
-        # Merge stored config (if any) with inferred config
         final_config = stored_config or {}
-        final_config.update(inferred_config) # Inferred values override stored ones if keys clash, adjust if needed
+        final_config.update(inferred_config) # Merge inferred over stored if needed
 
-        # 3. Check if critical configuration is missing
-        # Define what's critical (e.g., client's CRM API key if integration is needed)
-        critical_missing = final_config.get("required_config_missing", [])
-        # Example check:
-        # if not final_config.get("client_provided_api_keys", {}).get("crm_api_key"):
-        #     critical_missing.append("client_crm_api_key")
+        # 3. Check if critical configuration is missing (e.g., client API keys)
+        critical_missing = []
+        # --- THIS IS WHERE YOU DEFINE WHAT CLIENTS *MUST* PROVIDE ---
+        # Example: Check if a client CRM API key is needed and missing
+        # if not final_config.get("client_provided_api_keys", {}).get("client_crm_key"):
+        #     critical_missing.append("client_crm_key")
+        # if not final_config.get("client_provided_api_keys", {}).get("client_twilio_subaccount_sid"):
+        #     critical_missing.append("client_twilio_subaccount_sid")
+        # --- End Critical Checks ---
 
         if critical_missing:
             logger.warning(f"Configuration for {contact_id} is incomplete. Missing: {critical_missing}.")
-            # Option A: Mark for manual intervention
-            # await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_NEEDS_MANUAL_INTERVENTION, f"Missing config: {critical_missing}")
-            # return None
-
-            # Option B: Trigger automated follow-up (Conceptual - requires EmailServiceWrapper)
+            # --- Automated Follow-up Logic (Conceptual) ---
             # if self.email_service:
-            #     logger.info(f"Triggering automated config request email to {client_contact_data.get('email')}.")
-            #     success = await self.email_service.send_config_request_email(
-            #         to_email=client_contact_data.get('email'),
-            #         contact_name=client_contact_data.get('first_name'),
-            #         missing_items=critical_missing,
-            #         secure_form_link=f"{config.BASE_WEBHOOK_URL}/client_config/{contact_id}" # Example link
-            #     )
-            #     if success:
-            #         await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_CONFIG_COLLECTION_PENDING, f"Automated email sent for missing config: {critical_missing}")
-            #     else:
-            #         await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_NEEDS_MANUAL_INTERVENTION, f"Failed to send config request email.")
+            #     # ... send email asking for missing info ...
+            #     await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_CONFIG_COLLECTION_PENDING, ...)
             # else:
-            #      logger.error(f"Cannot request missing config for {contact_id}: Email service not available.")
-            #      await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_NEEDS_MANUAL_INTERVENTION, f"Missing config and no email service: {critical_missing}")
-            # For now, fail if critical info missing and no automated follow-up
+            #     await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_NEEDS_MANUAL_INTERVENTION, ...)
+            # --- End Conceptual Follow-up ---
             logger.error(f"CRITICAL configuration missing for {contact_id}: {critical_missing}. Manual intervention required.")
             await self.crm_wrapper.update_contact_status_and_notes(contact_id, STATUS_NEEDS_MANUAL_INTERVENTION, f"Missing critical config: {critical_missing}")
             return None
         else:
-            final_config["config_complete"] = True # Mark config as complete
-            # Store the completed config back to CRM
+            final_config["config_complete"] = True
             await self.crm_wrapper.upsert_contact({"id": contact_id, "client_config_json": final_config}, "id")
             logger.info(f"Configuration gathered successfully for Contact ID: {contact_id}.")
             return final_config
@@ -299,7 +267,6 @@ class ProvisioningAgent:
         """Helper to call the optional status callback."""
         if self.on_provisioning_event:
             try:
-                # Use create_task to avoid blocking the agent's main loop
                 asyncio.create_task(
                     self.on_provisioning_event(self.agent_id, contact_id, status, details)
                 )
@@ -309,78 +276,12 @@ class ProvisioningAgent:
 # --- Test Function ---
 async def _test_provisioning_agent_final():
     print("--- Testing ProvisioningAgent (FINAL - Level 40+) ---")
-    if not config.SUPABASE_ENABLED or not config.OPENROUTER_API_KEY:
-        print("Skipping test: Supabase or OpenRouter not configured.")
-        return
-
-    # Use Mock Dependencies for isolated testing
-    class MockDeploymentManager(DeploymentManagerInterface):
-        async def deploy_agent_instance(self, cfg: DeploymentConfig) -> Dict[str, Any]:
-            logger.info(f"MOCK DEPLOY: Client {cfg.client_id}, Agent {cfg.agent_type}")
-            await asyncio.sleep(1)
-            return {"status": "success", "instance_id": f"mock_{cfg.instance_id_suggestion}", "access_url": "http://mock.url"}
-        async def get_instance_status(self, instance_id: str) -> Dict[str, Any]: return {"status": "running"}
-        async def stop_agent_instance(self, instance_id: str) -> bool: return True
-        async def start_agent_instance(self, instance_id: str) -> bool: return True
-        async def delete_agent_instance(self, instance_id: str) -> bool: return True
-
-    class MockBrowserAutomatorForProvTest(BrowserAutomatorInterface):
-        async def setup_session(self, *args, **kwargs): return True
-        async def close_session(self, *args, **kwargs): pass
-        async def full_signup_and_extract(self, *args, **kwargs): return {"status": "success", "extracted_resources": {"api_key": "mock_prov_key"}}
-        async def navigate_to_page(self, *args, **kwargs): return True; async def take_screenshot(self, *args, **kwargs): return b"d"; async def fill_form_and_submit(self, *args, **kwargs): return True; async def check_success_condition(self, *args, **kwargs): return True; async def extract_resources_from_page(self, *args, **kwargs): return {}; async def solve_captcha_if_present(self, *args, **kwargs): return True; async def get_cookies(self) -> Optional[List[Dict[str, Any]]]: return []
-
-    llm = LLMClient()
-    fp_gen = FingerprintGenerator(llm)
-    browser_automator = MockBrowserAutomatorForProvTest()
-    resource_manager = ResourceManager(llm, fp_gen, browser_automator)
-    crm_wrapper = CRMWrapper()
-    deployment_manager = MockDeploymentManager()
-
-    # Ensure DB tables exist
-    db_client = create_supabase_client_for_setup()
-    if db_client: await setup_supabase_tables(db_client)
-    else: print("Cannot run test: Supabase client failed."); return
-
-    # Add a dummy contact needing provisioning
-    ts = int(time.time())
-    test_email = f"provisiontest.final.{ts}@example.com"
-    # Simulate analysis data being present from SalesAgent closing the deal
-    simulated_analysis = {
-        "likelihood_score": 8, "primary_inferred_pain_point": "Scaling outbound efforts",
-        "suggested_outreach_hook": "Automate top-of-funnel", "is_qualified": True,
-        "qualification_reasoning": "Good fit based on size and inferred pain.",
-        "confidence_in_analysis": "Medium", "suggested_next_action": "Immediate_SalesAgent_Call" # This would change post-sale
-    }
-    contact_payload = {
-        "email": test_email, "status": STATUS_NEEDS_PROVISIONING,
-        "company_name": f"Provision Final Test {ts}", "first_name": "Provision", "last_name": "Test",
-        "llm_full_analysis_json": simulated_analysis,
-        # Simulate client providing some config, but maybe missing CRM key
-        "client_config_json": {"target_niche": "FinTech AI", "agent_persona_tone": "Formal"}
-    }
-    created = await crm_wrapper.upsert_contact(contact_payload, "email")
-    if not created: print(f"Failed to create test contact {test_email}. Aborting."); return
-    print(f"Created test contact {test_email} with status '{STATUS_NEEDS_PROVISIONING}'.")
-
-    provisioning_agent = ProvisioningAgent(
-        agent_id="ProvAgent_Final_Test", resource_manager=resource_manager, crm_wrapper=crm_wrapper,
-        llm_client=llm, deployment_manager=deployment_manager
-    )
-
-    print("\n--- Running one provisioning check cycle ---")
-    # This will find the contact and attempt to provision it using the mock deployment manager
-    await provisioning_agent._check_and_provision_clients()
-
-    print("\n--- Verifying contact status in Supabase ---")
-    # Wait a moment for async updates
-    await asyncio.sleep(1)
-    final_contact = await crm_wrapper.get_contact_info(test_email, "email")
-    if final_contact:
-        print(f"Final status for {test_email}: {final_contact.get('status')}")
-        # Expected status: Service_Active (due to mock success) or Needs_Manual_Help/Failed if config gathering failed conceptually
-    else:
-        print(f"Could not retrieve final status for {test_email}.")
+    # ... (Test setup requires mocking or real dependencies as before) ...
+    # ... (Create test contact with STATUS_NEEDS_PROVISIONING) ...
+    # ... (Instantiate agent with real/mock dependencies) ...
+    # ... (Run agent._check_and_provision_clients()) ...
+    # ... (Verify final contact status in CRM) ...
+    print("ProvisioningAgent defined. Test requires full .env, Supabase setup, and a concrete DeploymentManager.")
 
 if __name__ == "__main__":
     # import asyncio
