@@ -1,0 +1,13 @@
+# boutique_ai_project/nixpacks.toml
+
+# Define phases for the build process
+phases.setup.nixPkgs = ["...", "python311", "curl", "unzip"] # Add essential OS packages if needed, python version matching your code
+phases.install.cmds = [
+    "pip install --upgrade pip",
+    "pip install --no-cache-dir -r requirements.txt",
+    "playwright install --with-deps"  # CRITICAL: Install playwright browsers
+]
+
+# Define the start command (can also be set here instead of Coolify UI, but UI overrides)
+start.cmd = "python -m uvicorn server:app --host 0.0.0.0 --port 8080"
+# start.cmd = "python -m uvicorn server:app --host 0.0.0.0 --port 8080 --workers 2" # Example with workers
