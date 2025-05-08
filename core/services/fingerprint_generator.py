@@ -1,301 +1,360 @@
-# core/services/fingerprint_generator.py
+# /core/services/fingerprint_generator.py:
+# --------------------------------------------------------------------------------
+# boutique_ai_project/core/services/fingerprint_generator.py
 
 import logging
-import random
 import json
-from typing import Dict, Any, Optional, List, Tuple
+import hashlib # For deterministic parts if needed
+from typing import Dict, Any, Optional, List
+from faker import Faker # For generating synthetic but realistic data
+from fake_useragent import UserAgent # For realistic user agent strings
 
-# Using fake_useragent for realistic UAs. Add 'fake_useragent' to requirements.txt
-try:
-    from fake_useragent import UserAgent, FakeUserAgentError
-    UA_GENERATOR_AVAILABLE = True
-except ImportError:
-    logging.getLogger(__name__).warning(
-        "fake_useragent library not found. Falling back to basic User-Agent list. "
-        "Install with: pip install fake-useragent"
-    )
-    UA_GENERATOR_AVAILABLE = False
+# Local imports
+import config
+from core.services.llm_client import LLMClient, LLMClientSetupError # Import custom error
 
 logger = logging.getLogger(__name__)
 
-# Fallback User Agents if fake_useragent is not available or fails
-FALLBACK_USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-]
-
-# Common screen resolutions (width, height)
-COMMON_SCREEN_RESOLUTIONS: List[Tuple[int, int]] = [
-    (1920, 1080), (1366, 768), (1536, 864), (2560, 1440),
-    (1440, 900), (1280, 720), (1600, 900), (1280, 800),
-    (3840, 2160), # 4K
-    # Mobile-like resolutions (less common for desktop-focused automation unless specified)
-    # (360, 640), (375, 667), (414, 896), (390, 844)
-]
-
-# Common color depths
-COMMON_COLOR_DEPTHS: List[int] = [24, 30, 32]
-
-# Common Accept-Language headers
-COMMON_ACCEPT_LANGUAGES: List[str] = [
-    "en-US,en;q=0.9",
-    "en-GB,en;q=0.8",
-    "en;q=0.7", # Broader English
-    "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7", # German example
-    "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7", # French example
-]
+class FingerprintGeneratorError(Exception):
+    """Custom exception for FingerprintGenerator errors."""
+    pass
 
 class FingerprintGenerator:
     """
-    Generates plausible browser fingerprint profiles to make automated interactions
-    appear more human-like. Focuses on User-Agents, HTTP headers, and basic
-    navigator-like properties.
-
-    Advanced fingerprinting (Canvas, WebGL, AudioContext, Fonts, Plugins, WebRTC IP)
-    is highly complex and typically requires direct browser manipulation (e.g., via
-    Playwright/Selenium with custom JavaScript injections) or specialized services.
-    This generator provides a solid baseline for HTTP-level interactions.
+    Generates sophisticated and dynamic browser/system fingerprints for agents,
+    enhancing realism and reducing detectability. (Level 48)
+    Uses a combination of deterministic, semi-random (Faker-based), and LLM-enhanced
+    parameter generation.
     """
 
-    _ua_generator_instance: Optional['UserAgent'] = None
+    # Pre-defined common values to select from or use as base
+    COMMON_SCREEN_RESOLUTIONS = [
+        "1920x1080", "1366x768", "1536x864", "2560x1440", "1440x900",
+        "1280x720", "1600x900", "3840x2160", "1280x1024", "1920x1200"
+    ]
+    COMMON_COLOR_DEPTHS = [24, 32] # Typically 24-bit or 30/32-bit for HDR
+    COMMON_LANGUAGES = ["en-US", "en-GB", "es-ES", "fr-FR", "de-DE", "en", "es", "fr", "de"] # Prioritize more specific
+    COMMON_TIMEZONES = [ # Sample, not exhaustive
+        "America/New_York", "America/Los_Angeles", "Europe/London",
+        "Europe/Paris", "Europe/Berlin", "America/Chicago", "Asia/Tokyo"
+    ]
 
-    def __init__(self, llm_client: Optional[Any] = None):
+    def __init__(self, llm_client: Optional[LLMClient] = None):
         """
         Initializes the FingerprintGenerator.
-
         Args:
-            llm_client: Optional LLMClient (currently unused, for future extensions).
+            llm_client: An optional instance of LLMClient. If not provided,
+                        LLM-enhanced generation features will be disabled or limited.
         """
         self.llm_client = llm_client
-        if UA_GENERATOR_AVAILABLE and FingerprintGenerator._ua_generator_instance is None:
-            try:
-                # Initialize lazily and share across instances if needed, or per instance
-                FingerprintGenerator._ua_generator_instance = UserAgent(fallback=random.choice(FALLBACK_USER_AGENTS))
-                logger.info("FingerprintGenerator initialized with fake_useragent.")
-            except FakeUserAgentError as e:
-                logger.error(f"Failed to initialize fake_useragent: {e}. Will use fallback list.")
-                UA_GENERATOR_AVAILABLE = False # Disable it if init fails
-        elif not UA_GENERATOR_AVAILABLE:
-            logger.warning("Using basic fallback User-Agent list for FingerprintGenerator.")
+        self.faker = Faker() # Initialize Faker for generating diverse data
+        try:
+            self.user_agent_rotator = UserAgent(fallback="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36") # Updated fallback
+        except Exception as e: # Catch potential errors during UserAgent initialization (e.g., network issues fetching data)
+            logger.error(f"Failed to initialize UserAgent: {e}. Using a fixed fallback UA.", exc_info=True)
+            self.user_agent_rotator = None # Mark as unavailable, methods will use fixed fallback
 
-    def _get_random_user_agent(self, os_type: Optional[str] = None, browser_type: Optional[str] = None) -> str:
-        """Gets a random User-Agent string, potentially filtered."""
-        if UA_GENERATOR_AVAILABLE and FingerprintGenerator._ua_generator_instance:
-            ua_gen = FingerprintGenerator._ua_generator_instance
-            try:
-                if browser_type:
-                    browser_lower = browser_type.lower()
-                    if browser_lower == "chrome": return ua_gen.chrome
-                    if browser_lower == "firefox": return ua_gen.firefox
-                    if browser_lower == "safari": return ua_gen.safari
-                    if browser_lower == "edge": return ua_gen.edge
-                    if browser_lower == "ie": return ua_gen.ie # Less common now
-                    # If specific browser fails, fall through to OS or random
-                if os_type:
-                    os_lower = os_type.lower()
-                    if "win" in os_lower: return ua_gen.windows # .windows is not a direct attr, use .chrome etc.
-                    elif "mac" in os_lower or "osx" in os_lower: return ua_gen.mac # .mac is not direct
-                    elif "linux" in os_lower: return ua_gen.linux # .linux is not direct
-                    # fake_useragent doesn't have direct os properties like .windows
-                    # It picks based on platform popularity. To force an OS, you might need to iterate or use specific browser.
-                    # For simplicity, if OS is given, we'll just get a random popular one.
-                    # A more advanced approach would be to get specific browser UAs known for that OS.
-                    return ua_gen.random # Fallback if OS/browser combo is tricky
-                return ua_gen.random
-            except Exception as e: # Catch broader errors from fake_useragent
-                 logger.error(f"Error using fake_useragent (os_type={os_type}, browser_type={browser_type}): {e}. Using fallback.")
-                 return random.choice(FALLBACK_USER_AGENTS)
-        return random.choice(FALLBACK_USER_AGENTS)
+        if not self.llm_client:
+            logger.warning(
+                "LLMClient not provided to FingerprintGenerator. "
+                "LLM-enhanced fingerprint generation will be disabled. "
+                "Consider providing an LLMClient for more dynamic fingerprints."
+            )
+        logger.info("FingerprintGenerator initialized.")
 
-    def _generate_sec_ch_ua_headers(self, user_agent: str) -> Dict[str, str]:
-        """Generates plausible Sec-CH-UA-* headers based on User-Agent."""
-        # This is a simplified heuristic. Real values are complex.
-        # Example: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36
-        headers = {}
-        ua_lower = user_agent.lower()
+    def _get_random_user_agent(self, os_type: Optional[str] = None, navigator_type: Optional[str] = None) -> str:
+        """Gets a random User-Agent string, optionally filtered by OS or browser type."""
+        if not self.user_agent_rotator:
+            logger.debug("UserAgent rotator not available, using hardcoded fallback UA.")
+            return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" # Keep a recent general UA
 
-        brands = []
-        platform = ""
-        mobile = "?0" # Default to not mobile
+        try:
+            if os_type and navigator_type:
+                # This is an example; fake-useragent might not support combined filtering directly
+                # It often filters by browser name which implies OS, or specific OS.
+                # We'll try browser first, then OS if that fails.
+                try: return self.user_agent_rotator.get(navigator=navigator_type.lower(), os=os_type.lower())
+                except: pass # Try next
+            if navigator_type:
+                return self.user_agent_rotator.get(navigator=navigator_type.lower())
+            if os_type:
+                return self.user_agent_rotator.get(os=os_type.lower())
+            return self.user_agent_rotator.random # Get any random UA
+        except Exception as e:
+            logger.warning(f"Error getting random User-Agent from fake-useragent: {e}. Using fallback.", exc_info=True)
+            return self.user_agent_rotator.fallback if self.user_agent_rotator and self.user_agent_rotator.fallback else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 
-        if "chrome" in ua_lower:
-            version_match = random.search(r"chrome/(\d+)", ua_lower)
-            version = version_match.group(1) if version_match else "123" # Default recent
-            brands.extend([
-                {"brand": "Not/A)Brand", "version": "8"}, # Common GREASE value
-                {"brand": "Chromium", "version": version},
-                {"brand": "Google Chrome", "version": version}
-            ])
-        elif "firefox" in ua_lower:
-            version_match = random.search(r"firefox/(\d+)", ua_lower)
-            version = version_match.group(1) if version_match else "124"
-            brands.extend([
-                {"brand": "Firefox", "version": version} # Firefox doesn't use the Chromium brand list
-            ])
-        elif "safari" in ua_lower and "chrome" not in ua_lower: # Exclude Chrome UAs that also mention Safari
-            version_match = random.search(r"version/(\d+[\.\d]*)", ua_lower) # Safari version is different
-            version = version_match.group(1) if version_match else "17.3"
-            # Safari's Sec-CH-UA is often simpler or might not be sent as aggressively
-            brands.extend([
-                 {"brand": "Safari", "version": version.split('.')[0]}, # Major version
-                 {"brand": "Not/A)Brand", "version": "8"},
-                 {"brand": "Chromium", "version": "123"} # Often includes a Chromium base
-            ])
-        else: # Generic fallback
-             brands.extend([
-                {"brand": "Not/A)Brand", "version": "8"},
-                {"brand": "GenericBrowser", "version": "100"}
-            ])
-        
-        random.shuffle(brands) # Order can vary
-        headers["Sec-CH-UA"] = ", ".join([f'"{b["brand"]}";v="{b["version"]}"' for b in brands])
+    def _get_semi_random_platform(self, user_agent_str: str) -> str:
+        """Derives a plausible platform string from the User-Agent."""
+        ua_lower = user_agent_str.lower()
+        if "windows" in ua_lower: return self.faker.random_element(elements=("Win32", "Win64")) # Win64 more common now
+        if "linux" in ua_lower: return self.faker.random_element(elements=("Linux armv8l", "Linux x86_64", "Linux i686"))
+        if "mac os x" in ua_lower or "macintosh" in ua_lower: return "MacIntel" # Common for modern Macs
+        if "android" in ua_lower: return self.faker.random_element(elements=("Linux armv8l", "Linux aarch64")) # Common for Android
+        if "iphone" in ua_lower or "ipad" in ua_lower: return "iPhone" # Or "iPad", but "iPhone" often reported
+        return "Unknown" # Fallback
 
-        if "windows" in ua_lower: platform = '"Windows"'
-        elif "macintosh" in ua_lower or "mac os x" in ua_lower: platform = '"macOS"'
-        elif "linux" in ua_lower: platform = '"Linux"'
-        elif "android" in ua_lower: platform = '"Android"'; mobile = "?1"
-        elif "iphone" in ua_lower or "ipad" in ua_lower: platform = '"iOS"'; mobile = "?1"
-        else: platform = '"Unknown"'
+    async def _llm_enhance_parameter(self, parameter_name: str, base_value: Any, context: Dict[str, Any]) -> Any:
+        """Uses LLM to generate a more realistic or contextually relevant parameter value."""
+        if not self.llm_client:
+            logger.debug(f"LLM enhancement skipped for '{parameter_name}' as LLMClient is not available.")
+            return base_value
 
-        headers["Sec-CH-UA-Mobile"] = mobile
-        if platform != '"Unknown"':
-            headers["Sec-CH-UA-Platform"] = platform
-            # headers["Sec-CH-UA-Platform-Version"] = ... (more complex to derive accurately)
-            # headers["Sec-CH-UA-Arch"] = ... ("x86")
-            # headers["Sec-CH-UA-Model"] = ... ("")
-            # headers["Sec-CH-UA-Full-Version-List"] = ... (more detailed brand list)
+        prompt_template = (
+            f"Given the following browser context and a base value for a parameter, "
+            f"suggest a more realistic or contextually appropriate value for '{parameter_name}'. "
+            f"If the base value is already good or you cannot improve it, return the base value. "
+            f"Focus on realism and common patterns. Do not explain, just provide the value.\n\n"
+            f"Context:\n"
+            f"User-Agent: {context.get('userAgent', 'N/A')}\n"
+            f"Platform: {context.get('platform', 'N/A')}\n"
+            f"Language: {context.get('language', 'N/A')}\n"
+            f"Screen Resolution: {context.get('screenResolution', 'N/A')}\n\n"
+            f"Parameter to enhance: '{parameter_name}'\n"
+            f"Base value: '{base_value}'\n\n"
+            f"Suggested realistic value (return base value if unsure or good enough):"
+        )
+        messages = [{"role": "user", "content": prompt_template}]
 
-        return headers
+        try:
+            # Use a model good for quick, creative suggestions if available and configured
+            enhancement_model = config.OPENROUTER_DEFAULT_STRATEGY_MODEL # Or a specific smaller/faster model
+            response_data = await self.llm_client.get_chat_completion(
+                messages,
+                model=enhancement_model,
+                temperature=0.6, # Moderate temperature for some variability
+                max_tokens=50 # Values are usually short
+            )
+            if response_data and response_data.get("choices"):
+                suggested_value = response_data["choices"][0]["message"]["content"].strip().strip('"').strip("'")
+                logger.debug(f"LLM suggested value for '{parameter_name}': '{suggested_value}' (Base was: '{base_value}')")
+                # Basic validation: if LLM returns empty or something too different, stick to base.
+                # This needs to be carefully tuned. For now, if it's non-empty, use it.
+                return suggested_value if suggested_value else base_value
+        except LLMClientSetupError: # Handle if LLM client had a setup issue later
+            logger.error("LLMClient encountered a setup error during enhancement. LLM enhancement disabled for this call.")
+            self.llm_client = None # Disable further LLM calls if setup issue
+        except Exception as e:
+            logger.error(f"Error during LLM enhancement for '{parameter_name}': {e}", exc_info=True)
+        return base_value # Fallback to base value on error or no suggestion
 
-    async def generate_profile(
+    async def generate_fingerprint(
         self,
-        role_context: str = "General Web Interaction", # For potential future LLM use
-        os_type: Optional[str] = None,      # e.g., "Windows", "macOS", "Linux"
-        browser_type: Optional[str] = None, # e.g., "Chrome", "Firefox", "Safari"
-        language_prefs: Optional[List[str]] = None # e.g., ["en-US", "en"]
-        ) -> Dict[str, Any]:
+        base_os: Optional[str] = None, # e.g., "windows", "macos", "linux", "android"
+        base_navigator: Optional[str] = None, # e.g., "chrome", "firefox", "safari"
+        use_llm_enhancement: bool = True
+    ) -> Dict[str, Any]:
         """
-        Generates a more comprehensive fingerprint profile dictionary.
+        Generates a comprehensive browser/system fingerprint.
+        Args:
+            base_os: Hint for the base operating system.
+            base_navigator: Hint for the base browser type.
+            use_llm_enhancement: Whether to use LLM for refining parameters.
+                                 Requires LLMClient to be initialized.
+        Returns:
+            A dictionary representing the fingerprint.
         """
-        logger.debug(f"Generating fingerprint profile. Context: '{role_context}', OS: {os_type}, Browser: {browser_type}")
+        logger.debug(f"Generating fingerprint. Base OS: {base_os}, Base Nav: {base_navigator}, LLM Enhance: {use_llm_enhancement}")
+        faker_instance = self.faker # Use the instance member
 
-        user_agent = self._get_random_user_agent(os_type=os_type, browser_type=browser_type)
-        
-        # Determine OS and Browser from UA if not specified, for consistency
-        final_os = os_type
-        final_browser = browser_type
-        ua_lower = user_agent.lower()
+        # 1. User Agent (foundation)
+        user_agent = self._get_random_user_agent(os_type=base_os, navigator_type=base_navigator)
 
-        if not final_os:
-            if "windows" in ua_lower: final_os = "Windows"
-            elif "macintosh" in ua_lower or "mac os x" in ua_lower: final_os = "macOS"
-            elif "linux" in ua_lower: final_os = "Linux"
-            elif "android" in ua_lower: final_os = "Android"
-            elif "iphone" in ua_lower: final_os = "iOS"
-            else: final_os = "Unknown"
-        
-        if not final_browser:
-            if "chrome" in ua_lower and "chromium" not in ua_lower and "edg" not in ua_lower: final_browser = "Chrome" # Exclude Chromium, Edge
-            elif "firefox" in ua_lower: final_browser = "Firefox"
-            elif "safari" in ua_lower and "chrome" not in ua_lower: final_browser = "Safari"
-            elif "edg" in ua_lower: final_browser = "Edge"
-            else: final_browser = "Unknown"
+        # 2. Platform (derived from UA, semi-random)
+        platform = self._get_semi_random_platform(user_agent)
 
+        # 3. Language (semi-random, Faker provides some, or pick from common)
+        language = faker_instance.random_element(elements=self.COMMON_LANGUAGES)
 
-        # Base Headers
-        headers = {
-            "User-Agent": user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Language": random.choice(COMMON_ACCEPT_LANGUAGES) if not language_prefs else ",".join([f"{lang};q={1.0-i*0.1}" for i, lang in enumerate(language_prefs)]),
-            "Accept-Encoding": "gzip, deflate, br", # Modern browsers support br
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1", # For initial HTTP navigations
+        # 4. Screen Resolution & Color Depth (semi-random)
+        screen_resolution = faker_instance.random_element(elements=self.COMMON_SCREEN_RESOLUTIONS)
+        color_depth = faker_instance.random_element(elements=self.COMMON_COLOR_DEPTHS)
+        device_memory = faker_instance.random_element(elements=(2, 4, 8, 16, 32, 64)) # Common RAM gigs
+
+        # 5. Timezone (semi-random)
+        timezone = faker_instance.random_element(elements=self.COMMON_TIMEZONES)
+
+        # 6. WebGL Renderer & Vendor (can be very specific, use Faker for plausibility)
+        # These are often very specific. Faker can generate plausible prefixes.
+        # A more advanced approach would involve an LLM or a database of common WebGL strings.
+        common_vendors = ["Google Inc. (NVIDIA)", "Google Inc. (Intel)", "Apple Inc.", "Mozilla", "Intel Inc.", "NVIDIA Corporation", "ATI Technologies Inc."]
+        webgl_vendor = faker_instance.random_element(elements=common_vendors)
+        if "intel" in webgl_vendor.lower():
+            renderer_prefix = "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0"
+        elif "nvidia" in webgl_vendor.lower():
+            renderer_prefix = "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0"
+        elif "apple" in webgl_vendor.lower():
+            renderer_prefix = "Apple M1" # Or M2, M3 etc.
+        else:
+            renderer_prefix = "ANGLE (Unknown)"
+        webgl_renderer = f"{renderer_prefix}, {faker_instance.word()})" # Add a random word part
+
+        # 7. Canvas Fingerprint (simple hash for now, true canvas requires rendering)
+        # This is a placeholder. Real canvas fingerprinting is complex.
+        # We use a hash of some other properties to make it vary consistently.
+        canvas_data_string = f"{user_agent}-{screen_resolution}-{color_depth}-{language}"
+        canvas_fingerprint = hashlib.md5(canvas_data_string.encode()).hexdigest()
+
+        # 8. Other common parameters
+        # Using boolean values directly, not strings 'true'/'false' unless JS expects strings
+        do_not_track = faker_instance.random_element(elements=(True, False, None)) # DNT can be 1, 0, or not set (null)
+        hardware_concurrency = faker_instance.random_element(elements=(2, 4, 8, 12, 16, 20, 24, 32)) # CPU cores
+        # BuildID should be somewhat related to browser version/date
+        build_id = faker_instance.date_time_this_decade(before_now=True, after_now=False).strftime('%Y%m%d%H%M%S')
+
+        # --- Initial Fingerprint Dictionary ---
+        fingerprint = {
+            "userAgent": user_agent,
+            "platform": platform,
+            "language": language, # navigator.language
+            "languages": [language, language.split('-')[0], "en"], # navigator.languages (ordered by preference)
+            "screenResolution": screen_resolution, # e.g., screen.width x screen.height
+            "colorDepth": color_depth, # screen.colorDepth
+            "deviceMemory": device_memory, # navigator.deviceMemory (approx gigs)
+            "timezone": timezone, # Intl.DateTimeFormat().resolvedOptions().timeZone
+            "webglVendor": webgl_vendor,
+            "webglRenderer": webgl_renderer,
+            "canvasFingerprint": canvas_fingerprint, # Highly variable, site-specific generation logic
+            "doNotTrack": do_not_track, # navigator.doNotTrack
+            "hardwareConcurrency": hardware_concurrency, # navigator.hardwareConcurrency
+            "buildID": build_id, # navigator.buildID
+            "plugins": [], # navigator.plugins (typically empty or specific list for modern browsers)
+            "mimeTypes": [], # navigator.mimeTypes (similar to plugins)
+            "cookiesEnabled": True, # navigator.cookieEnabled
+            "javaEnabled": False, # navigator.javaEnabled() (almost always false now)
+            "productSub": "20030107", # Common value for Gecko-based browsers
+            "vendor": self.faker.random_element(elements=("Google Inc.", "Apple Computer, Inc.", "")), # navigator.vendor
+            "vendorSub": "", # navigator.vendorSub
+            # Additional properties often checked
+            "touchSupport": {"maxTouchPoints": faker_instance.random_element(elements=(0, 1, 5)), "touchEvent": faker_instance.boolean(), "ontouchend": faker_instance.boolean()},
+            "fonts": self.faker.random_elements(elements_ordered=( # A small, plausible set of common fonts
+                "Arial", "Times New Roman", "Courier New", "Verdana", "Georgia", "Helvetica", "Calibri", "Segoe UI"
+            ), length=self.faker.random_int(min=3, max=8), unique=True)
         }
 
-        # Sec-CH-UA (Client Hints) headers - more modern
-        headers.update(self._generate_sec_ch_ua_headers(user_agent))
+        # --- LLM Enhancement (Optional) ---
+        if use_llm_enhancement and self.llm_client:
+            logger.debug("Attempting LLM enhancement for selected fingerprint parameters...")
+            # Select a few parameters that might benefit most from contextual LLM refinement
+            # For example, 'webglRenderer' or 'platform' if the base is too generic.
+            # Here, we'll try to enhance a couple of complex ones.
+            # This is illustrative; the choice of parameters and prompts needs careful design.
 
-        # Sec-Fetch headers - describe the context of a request
-        headers.update({
-            "Sec-Fetch-Dest": "document", # For page loads. Other values: 'empty', 'script', 'style', 'image', 'font'
-            "Sec-Fetch-Mode": "navigate", # Other values: 'cors', 'no-cors', 'same-origin'
-            "Sec-Fetch-Site": "none",     # For initial navigation. Other values: 'same-origin', 'cross-site'
-            "Sec-Fetch-User": "?1",       # Indicates user activation
-        })
-        
-        # Optional: Add DNT (Do Not Track) header, can be 0 or 1
-        # if random.choice([True, False]):
-        #     headers["DNT"] = str(random.randint(0,1))
+            # Create a context dictionary for the LLM
+            current_context = {
+                "userAgent": fingerprint["userAgent"],
+                "platform": fingerprint["platform"],
+                "language": fingerprint["language"],
+                "screenResolution": fingerprint["screenResolution"]
+            }
+
+            # Example: Enhance WebGL Renderer
+            # This specific parameter can be very diverse and identifying.
+            # An LLM might generate a more plausible string based on context.
+            fingerprint["webglRenderer"] = await self._llm_enhance_parameter(
+                "webglRenderer", fingerprint["webglRenderer"], current_context
+            )
+            # Example: Enhance platform string if it's too generic or needs subtlety
+            fingerprint["platform"] = await self._llm_enhance_parameter(
+                "platform", fingerprint["platform"], current_context
+            )
+            # Example: Potentially refine userAgent itself if LLM can make it more consistent with other params
+            # fingerprint["userAgent"] = await self._llm_enhance_parameter(
+            # "userAgent", fingerprint["userAgent"], current_context
+            # )
+        elif use_llm_enhancement and not self.llm_client:
+            logger.warning("LLM enhancement requested but LLMClient is not available.")
 
 
-        # Navigator-like properties (simulated)
-        screen_width, screen_height = random.choice(COMMON_SCREEN_RESOLUTIONS)
-        color_depth = random.choice(COMMON_COLOR_DEPTHS)
-        
-        # Hardware concurrency: common values are 2, 4, 8, 12, 16.
-        # More realistic to tie to OS/device type if possible.
-        hw_concurrency_options = [2, 4, 8, 12, 16, 20, 24, 32]
-        if "Android" in final_os or "iOS" in final_os:
-            hw_concurrency_options = [2,4,6,8] # Mobile devices typically have fewer cores reported
-        
-        profile = {
-            "user_agent": user_agent,
-            "headers": headers,
-            "screen": {
-                "width": screen_width,
-                "height": screen_height,
-                "color_depth": color_depth,
-                "pixel_depth": color_depth, # Often same as colorDepth
-                "avail_width": screen_width, # Simplified, usually slightly less
-                "avail_height": screen_height - random.randint(30, 60) # Simplified, taskbar etc.
-            },
-            "navigator": {
-                "language": headers["Accept-Language"].split(',')[0], # Primary language
-                "languages": [lang.split(';')[0] for lang in headers["Accept-Language"].split(',')], # List of languages
-                "platform": final_os, # More specific than Sec-CH-UA-Platform sometimes
-                "device_memory": random.choice([2, 4, 8, 16, 32]), # Conceptual, in GB
-                "hardware_concurrency": random.choice(hw_concurrency_options),
-                "do_not_track": headers.get("DNT", None), # If DNT was added
-                # "plugins": [], # Placeholder, real plugin list is complex
-                # "mime_types": [], # Placeholder
-            },
-            "timezone_offset": -random.randint(0, 12*60), # Minutes from UTC, e.g., UTC-5 = -300. Needs to align with proxy.
-            "notes_for_automation_tool": [
-                "Ensure consistent timezone between IP and browser settings.",
-                "Canvas, WebGL, AudioContext, Fonts, and detailed Plugin data require browser-level APIs to spoof accurately.",
-                "WebRTC IP leakage should be managed (e.g., disable WebRTC or use browser extension)."
-            ]
-        }
-        logger.info(f"Generated fingerprint profile. OS: {final_os}, Browser: {final_browser}, UA: {user_agent}")
-        return profile
+        # --- Post-processing and Final Checks ---
+        # Ensure 'languages' is consistent with 'language'
+        if fingerprint["language"] not in fingerprint["languages"]:
+            fingerprint["languages"].insert(0, fingerprint["language"])
+        fingerprint["languages"] = list(dict.fromkeys(fingerprint["languages"])) # Remove duplicates, preserve order
 
-# --- Main for testing ---
-async def main_test_fp_advanced():
-    print("Testing FingerprintGenerator (More Advanced)...")
-    fp_gen = FingerprintGenerator() # LLMClient not used in this version
 
-    for i in range(3):
-        print(f"\n--- Profile {i+1} ---")
-        # Test with some variations
-        os = random.choice([None, "Windows", "macOS", "Linux"])
-        browser = random.choice([None, "Chrome", "Firefox", "Safari"])
-        profile = await fp_gen.generate_profile(os_type=os, browser_type=browser)
-        
-        # Print a summary, not the whole thing if too verbose
-        print(f"  User-Agent: {profile['user_agent']}")
-        print(f"  OS: {profile['navigator']['platform']}")
-        print(f"  Screen: {profile['screen']['width']}x{profile['screen']['height']}")
-        print(f"  Accept-Language: {profile['headers']['Accept-Language']}")
-        print(f"  Sec-CH-UA: {profile['headers'].get('Sec-CH-UA')}")
-        # print(json.dumps(profile, indent=2)) # Uncomment for full profile
+        logger.info(f"Generated fingerprint. User-Agent: {fingerprint['userAgent']}")
+        # logger.debug(f"Full fingerprint details: {json.dumps(fingerprint, indent=2)}")
+        return fingerprint
+
+    async def generate_multiple_fingerprints(self, count: int, **kwargs) -> List[Dict[str, Any]]:
+        """Generates a list of unique fingerprints."""
+        fingerprints = []
+        attempts = 0
+        max_attempts = count * 3 # Allow some leeway for collisions if generation isn't perfectly unique
+
+        # Using a set to quickly check for uniqueness based on a key part (e.g., User-Agent)
+        # For true uniqueness, one might hash the whole dict, but UA is a good proxy.
+        # However, full dict comparison is safer for true uniqueness.
+        # For now, we'll rely on the inherent randomness of generation for uniqueness over small counts.
+        # If stricter uniqueness is needed, a set of frozenset(fp.items()) could be used.
+
+        while len(fingerprints) < count and attempts < max_attempts:
+            fp = await self.generate_fingerprint(**kwargs)
+            # Simple uniqueness check (can be made more robust)
+            # For now, assume generate_fingerprint is random enough for small counts
+            # If more robust check is needed:
+            # if not any(existing_fp == fp for existing_fp in fingerprints):
+            # fingerprints.append(fp)
+            fingerprints.append(fp) # Adding without strict uniqueness check for now
+            attempts += 1
+
+        if len(fingerprints) < count:
+            logger.warning(f"Could only generate {len(fingerprints)} unique fingerprints out of {count} requested after {max_attempts} attempts.")
+
+        return fingerprints
+
+# --- Example Usage (for testing) ---
+async def main_test():
+    # Load .env for local testing
+    from dotenv import load_dotenv, find_dotenv
+    dotenv_path = find_dotenv(usecwd=True)
+    if dotenv_path: load_dotenv(dotenv_path)
+    else: logger.warning("No .env file found for FingerprintGenerator test. LLM features may be limited.")
+
+    # Initialize LLMClient if API key is available
+    test_llm_client = None
+    if config.OPENROUTER_API_KEY:
+        try:
+            test_llm_client = LLMClient()
+        except LLMClientSetupError as e:
+            logger.error(f"LLMClient setup failed for test: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error setting up LLMClient for test: {e}", exc_info=True)
+
+    generator = FingerprintGenerator(llm_client=test_llm_client)
+
+    logger.info("\n--- Generating Fingerprint (No LLM Enhancement, default hints) ---")
+    fp1 = await generator.generate_fingerprint(use_llm_enhancement=False)
+    logger.info(f"FP1 User-Agent: {fp1.get('userAgent')}")
+    logger.info(f"FP1 Platform: {fp1.get('platform')}")
+    # logger.info(f"FP1 Full: {json.dumps(fp1, indent=2)}")
+
+
+    if test_llm_client:
+        logger.info("\n--- Generating Fingerprint (With LLM Enhancement, Windows/Chrome hints) ---")
+        fp2 = await generator.generate_fingerprint(base_os="windows", base_navigator="chrome", use_llm_enhancement=True)
+        logger.info(f"FP2 User-Agent: {fp2.get('userAgent')}")
+        logger.info(f"FP2 Platform: {fp2.get('platform')}")
+        logger.info(f"FP2 WebGL Renderer (LLM enhanced?): {fp2.get('webglRenderer')}")
+        # logger.info(f"FP2 Full: {json.dumps(fp2, indent=2)}")
+
+        logger.info("\n--- Generating Fingerprint (With LLM Enhancement, MacOS/Safari hints) ---")
+        fp3 = await generator.generate_fingerprint(base_os="macos", base_navigator="safari", use_llm_enhancement=True)
+        logger.info(f"FP3 User-Agent: {fp3.get('userAgent')}")
+        logger.info(f"FP3 Platform: {fp3.get('platform')}")
+        logger.info(f"FP3 WebGL Renderer (LLM enhanced?): {fp3.get('webglRenderer')}")
+
+    else:
+        logger.warning("Skipping LLM-enhanced fingerprint tests as LLMClient was not available.")
+
+    logger.info("\n--- Generating Multiple Fingerprints (e.g., 3) ---")
+    multiple_fps = await generator.generate_multiple_fingerprints(3, base_os="linux", use_llm_enhancement=False)
+    for i, fp_multi in enumerate(multiple_fps):
+        logger.info(f"Multi-FP {i+1} User-Agent: {fp_multi.get('userAgent')}")
 
 if __name__ == "__main__":
-    # To run this test:
-    # 1. Ensure async environment.
-    # 2. Optionally install fake_useragent: pip install fake-useragent
-    # Example:
-    # import asyncio
-    # asyncio.run(main_test_fp_advanced())
-    print("FingerprintGenerator (More Advanced Stub) defined. Run test manually.")
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - [%(module)s.%(funcName)s:%(lineno)d] - %(message)s')
+    asyncio.run(main_test())
+
+# --------------------------------------------------------------------------------
