@@ -6,9 +6,9 @@ import json
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 
-import docker # Requires 'pip install docker'
-from docker.errors import APIError, NotFound, DockerException
-from docker.models.containers import Container
+import Docker # Requires 'pip install docker'
+from Docker.errors import APIError, NotFound, DockerException
+from Docker.models.containers import Container
 
 import config # Root config
 
