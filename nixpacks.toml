@@ -1,13 +1,29 @@
 # boutique_ai_project/nixpacks.toml
 
 # Define phases for the build process
-phases.setup.nixPkgs = ["...", "python311", "curl", "unzip"] # Add essential OS packages if needed, python version matching your code
+phases.setup.nixPkgs = [
+    "python311", # Explicitly request ONLY Python 3.11
+    "gcc",       # Needed for compiling some Python packages
+    "curl",      # Often needed by install scripts or playwright
+    "unzip"      # Often needed by install scripts or playwright
+    # Add other essential OS packages needed by Playwright's --with-deps if the base image lacks them
+    # e.g., "libxkbcommon", "libxcomposite", "libxdamage", "libxfixes", "libxrandr", "libgbm", "libpango", "libcairo", "libasound2", "libatspi2.0-0", "libcups2", "libdrm2", "libnss3", "libnspr4", "libdbus-1-3", "libatk1.0-0", "libatk-bridge2.0-0"
+    # It's often better to rely on Playwright's --with-deps to pull these in via apt below if using an Ubuntu base.
+]
+# Add apt packages needed specifically for playwright install --with-deps on Ubuntu base
+phases.setup.aptPkgs = [
+    "libnss3", "libnspr4", "libdbus-1-3", "libatk1.0-0", "libatk-bridge2.0-0",
+    "libcups2", "libdrm2", "libxkbcommon0", "libxcomposite1", "libxdamage1",
+    "libxfixes3", "libxrandr2", "libgbm1", "libpango-1.0-0", "libcairo2",
+    "libasound2", "libatspi2.0-0"
+]
+
 phases.install.cmds = [
     "pip install --upgrade pip",
     "pip install --no-cache-dir -r requirements.txt",
-    "playwright install --with-deps"  # CRITICAL: Install playwright browsers
+    "playwright install --with-deps"  # CRITICAL: Install playwright browsers AFTER pip install
 ]
+phases.install.cacheDirectories = ["/root/.cache/pip"] # Cache pip downloads
 
-# Define the start command (can also be set here instead of Coolify UI, but UI overrides)
+# Define the start command (Coolify UI setting will override this if set there)
 start.cmd = "python -m uvicorn server:app --host 0.0.0.0 --port 8080"
-# start.cmd = "python -m uvicorn server:app --host 0.0.0.0 --port 8080 --workers 2" # Example with workers
