@@ -94,10 +94,10 @@ DEEPGRAM_TTS_MODEL: str = get_env_var("DEEPGRAM_TTS_MODEL", default="aura-asteri
 
 # OpenRouter
 OPENROUTER_API_KEY: Optional[str] = get_env_var("OPENROUTER_API_KEY")
-OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL: str = get_env_var("OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL", default="google/gemini-1.5-pro-latest")
-OPENROUTER_DEFAULT_STRATEGY_MODEL: str = get_env_var("OPENROUTER_DEFAULT_STRATEGY_MODEL", default="google/gemini-1.5-flash-latest")
-OPENROUTER_DEFAULT_ANALYSIS_MODEL: str = get_env_var("OPENROUTER_DEFAULT_ANALYSIS_MODEL", default="google/gemini-1.5-pro-latest")
-OPENROUTER_DEFAULT_VISION_MODEL: str = get_env_var("OPENROUTER_DEFAULT_VISION_MODEL", default="openai/gpt-4o")
+OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL: str = get_env_var("OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL", default="google/gemini-2.5-flash-preview")
+OPENROUTER_DEFAULT_STRATEGY_MODEL: str = get_env_var("OPENROUTER_DEFAULT_STRATEGY_MODEL", default="google/gemini-2.5-flash-preview")
+OPENROUTER_DEFAULT_ANALYSIS_MODEL: str = get_env_var("OPENROUTER_DEFAULT_ANALYSIS_MODEL", default="google/gemini-2.5-flash-preview")
+OPENROUTER_DEFAULT_VISION_MODEL: str = get_env_var("OPENROUTER_DEFAULT_VISION_MODEL", default="google/gemini-2.5-flash-preview:thinking")
 OPENROUTER_SITE_URL: Optional[str] = get_env_var("OPENROUTER_SITE_URL", required=False, default="https://your-app.com")
 OPENROUTER_APP_NAME: Optional[str] = get_env_var("OPENROUTER_APP_NAME", required=False, default="BoutiqueAI")
 OPENROUTER_CLIENT_MAX_RETRIES: int = get_int_env_var("OPENROUTER_CLIENT_MAX_RETRIES", default=3)
