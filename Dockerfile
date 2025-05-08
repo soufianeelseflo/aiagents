@@ -1,4 +1,4 @@
-# /Dockerfile:
+# /Dockerfile: (DEBUG VERSION)
 # --------------------------------------------------------------------------------
 # Base image: Choose a specific Python version for reproducibility
 FROM python:3.11-slim
@@ -59,17 +59,9 @@ COPY . .
 # Defaulting to 8080 as per original README guidance for Coolify.
 EXPOSE 8080
 
-# Command to run the application using Uvicorn
-# This CMD will be overridden if you set a "Start Command" in Coolify,
-# but it's good practice to have a default.
-# It references LOCAL_SERVER_PORT from config.py which should load from .env
-# The host 0.0.0.0 makes it accessible from outside the container.
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
-# If config.LOCAL_SERVER_PORT is reliably set and you want to use it directly:
-# CMD sh -c "uvicorn server:app --host 0.0.0.0 --port ${LOCAL_SERVER_PORT:-8080}"
-# This ^ requires LOCAL_SERVER_PORT to be an environment variable available at runtime.
-# The current server.py logic uses config.LOCAL_SERVER_PORT for the uvicorn.run call
-# when __name__ == "__main__", but for Docker CMD, explicitly stating the port is safer
-# unless you pass LOCAL_SERVER_PORT as an ENV variable to the container.
-# The Python code itself (config.py) will load LOCAL_SERVER_PORT from .env for the app.
+# DEBUGGING COMMAND: Print config.py and keep container alive
+CMD ["sh", "-c", "echo '--- Checking /app/config.py ---'; cat /app/config.py; echo '--- End /app/config.py ---'; echo 'Container sleeping for debug...'; sleep infinity"]
+
+# Original Command (commented out for debugging)
+# CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
 # --------------------------------------------------------------------------------
