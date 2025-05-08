@@ -26,16 +26,17 @@ from core.agents.resource_manager import ResourceManager
 from core.agents.acquisition_agent import AcquisitionAgent, DEFAULT_CLAY_SERVICE_AUTOMATION_CONFIG
 from core.agents.sales_agent import SalesAgent
 from core.automation.browser_automator_interface import BrowserAutomatorInterface
-# from core.automation.multimodal_playwright_automator import MultiModalPlaywrightAutomator # Your production implementation
+# --- Import the REAL Automator Implementation ---
+# Ensure this file exists and Playwright is installed if using this automator
+from core.automation.multimodal_playwright_automator import MultiModalPlaywrightAutomator
+# --- OR Import a Mock for testing if Playwright isn't ready ---
+# from core.automation.mock_browser_automator import MockBrowserAutomator # Assuming you create a mock file
 from core.database_setup import setup_supabase_tables, create_client as create_supabase_client_for_setup
 
-# --- Mock Automator (Replace with your real one in production) ---
-# Included here so the server runs out-of-the-box for testing core logic.
-# Replace instantiation in lifespan with your actual Playwright/Selenium implementation.
+# --- Mock Automator (Defined here for simplicity if not using separate file) ---
+# Replace this with importing your real implementation for production.
 class MockBrowserAutomatorForServer(BrowserAutomatorInterface):
-    def __init__(self, llm_client: Optional[LLMClient] = None):
-        self.llm_client = llm_client
-        logger.info("MockBrowserAutomatorForServer initialized.")
+    def __init__(self, llm_client: Optional[LLMClient] = None): self.llm_client = llm_client; logger.info("MockBrowserAutomatorForServer initialized.")
     async def setup_session(self, *args, **kwargs): logger.info("MockAutomator(Server): setup_session"); return True
     async def close_session(self, *args, **kwargs): logger.info("MockAutomator(Server): close_session")
     async def navigate_to_page(self, url: str, *args, **kwargs): logger.info(f"MockAutomator(Server): navigate_to_page {url}"); return True
@@ -53,7 +54,6 @@ class MockBrowserAutomatorForServer(BrowserAutomatorInterface):
 logger = logging.getLogger("boutique_ai_server_orchestrator")
 
 # --- Application State ---
-# Using a class to hold state is cleaner than global variables
 class AppState:
     llm_client: LLMClient
     fingerprint_generator: FingerprintGenerator
@@ -65,7 +65,7 @@ class AppState:
     acquisition_agent: AcquisitionAgent
     active_sales_agents: Dict[str, SalesAgent] = {}
     supabase_client_for_setup: Optional[Any] = None
-    is_shutting_down: bool = False # Flag for graceful shutdown
+    is_shutting_down: bool = False
 
 # --- FastAPI Lifespan Event Handler ---
 @asynccontextmanager
@@ -78,7 +78,6 @@ async def lifespan(app: FastAPI):
     if config.SUPABASE_ENABLED:
         logger.info("Attempting Supabase database schema setup/verification...")
         try:
-            # Use service role key from config for setup
             app.state.supabase_client_for_setup = create_supabase_client_for_setup()
             if app.state.supabase_client_for_setup:
                 await setup_supabase_tables(app.state.supabase_client_for_setup)
@@ -95,18 +94,32 @@ async def lifespan(app: FastAPI):
     try:
         app.state.llm_client = LLMClient()
         app.state.fingerprint_generator = FingerprintGenerator(llm_client=app.state.llm_client)
-        
-        # PRODUCTION: Replace MockBrowserAutomatorForServer with your actual implementation
-        # from core.automation.multimodal_playwright_automator import MultiModalPlaywrightAutomator
-        # app.state.browser_automator = MultiModalPlaywrightAutomator(llm_client=app.state.llm_client, headless=True)
-        app.state.browser_automator = MockBrowserAutomatorForServer(llm_client=app.state.llm_client)
-        if isinstance(app.state.browser_automator, MockBrowserAutomatorForServer):
-            logger.warning("Lifespan Startup: Using MOCK BrowserAutomator. Trial acquisition will be SIMULATED.")
+
+        # --- Instantiate Browser Automator ---
+        # DECISION POINT: Choose which automator to use.
+        use_real_automator = config.get_bool_env_var("USE_REAL_BROWSER_AUTOMATOR", default=False)
+        if use_real_automator:
+            try:
+                # Ensure Playwright is installed if using this
+                app.state.browser_automator = MultiModalPlaywrightAutomator(
+                    llm_client=app.state.llm_client,
+                    headless=not config.get_bool_env_var("PLAYWRIGHT_HEADFUL_MODE", default=True) # Default headless for server
+                )
+                logger.info("Lifespan Startup: Using REAL MultiModalPlaywrightAutomator.")
+            except ImportError:
+                 logger.error("Failed to import MultiModalPlaywrightAutomator. Ensure 'playwright' is installed. Falling back to Mock.")
+                 app.state.browser_automator = MockBrowserAutomatorForServer(llm_client=app.state.llm_client)
+            except Exception as auto_err:
+                 logger.error(f"Error initializing MultiModalPlaywrightAutomator: {auto_err}. Falling back to Mock.", exc_info=True)
+                 app.state.browser_automator = MockBrowserAutomatorForServer(llm_client=app.state.llm_client)
+        else:
+            app.state.browser_automator = MockBrowserAutomatorForServer(llm_client=app.state.llm_client)
+            logger.warning("Lifespan Startup: Using MOCK BrowserAutomator (set USE_REAL_BROWSER_AUTOMATOR=true in .env to enable real one).")
 
         app.state.resource_manager = ResourceManager(
             llm_client=app.state.llm_client,
             fingerprint_generator=app.state.fingerprint_generator,
-            browser_automator=app.state.browser_automator
+            browser_automator=app.state.browser_automator # Pass the chosen instance
         )
         app.state.data_wrapper = DataWrapper()
         app.state.crm_wrapper = CRMWrapper()
@@ -128,19 +141,18 @@ async def lifespan(app: FastAPI):
         }
         if not acq_criteria["clay_enrichment_table_webhook_url"]:
             logger.error("CRITICAL: CLAY_ENRICHMENT_WEBHOOK_URL_PRIMARY not set. AcquisitionAgent Clay enrichment will fail.")
-        
+
         app.state.acquisition_agent = AcquisitionAgent(
             agent_id="GlobalAcquisitionAgent_001",
             resource_manager=app.state.resource_manager, data_wrapper=app.state.data_wrapper,
             llm_client=app.state.llm_client, crm_wrapper=app.state.crm_wrapper,
             target_criteria=acq_criteria
         )
-        await app.state.acquisition_agent.start() # Start its background processing loop
+        await app.state.acquisition_agent.start()
         logger.info("AcquisitionAgent started in background.")
 
     except Exception as init_err:
         logger.critical(f"CRITICAL ERROR during application initialization: {init_err}", exc_info=True)
-        # Optionally raise to prevent FastAPI from starting fully
         raise RuntimeError("Failed to initialize core application components.") from init_err
 
     # --- Application is Ready ---
@@ -150,58 +162,45 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown Logic ---
     logger.info("Boutique AI Server shutting down...")
-    app.state.is_shutting_down = True # Signal shutdown
+    app.state.is_shutting_down = True
 
-    # Stop background agents first
     if hasattr(app.state, 'acquisition_agent') and app.state.acquisition_agent:
         logger.info("Stopping AcquisitionAgent...")
         await app.state.acquisition_agent.stop()
-        logger.info("AcquisitionAgent stopped.")
-    
-    # Attempt to end active calls gracefully
+
     active_calls = list(app.state.active_sales_agents.values())
     if active_calls:
         logger.info(f"Signaling end for {len(active_calls)} active sales calls...")
         stop_tasks = [agent.stop_call("Server Shutdown") for agent in active_calls]
         await asyncio.gather(*stop_tasks, return_exceptions=True)
-        # Give a brief moment for agents to potentially clean up after signal
-        await asyncio.sleep(2) 
+        await asyncio.sleep(2) # Brief wait for cleanup signals
 
-    # Close shared resources
     logger.info("Closing shared resources...")
     await DataWrapper.close_session()
     if hasattr(app.state, 'browser_automator') and app.state.browser_automator and hasattr(app.state.browser_automator, 'close_session'):
         await app.state.browser_automator.close_session()
-    
-    # Close Supabase client if needed (usually not required for supabase-py)
-    # if app.state.supabase_client_for_setup: ... close logic if any ...
 
     logger.info("Boutique AI Server shutdown complete.")
 
 # --- FastAPI App Instance ---
 app = FastAPI(
     title="Boutique AI Server & Orchestrator",
-    version="1.3.0", # Incremented version
+    version="1.4.1", # Incremented version
     lifespan=lifespan
 )
 
 # --- Dependency Injection Helper ---
-# This allows accessing app state easily within route functions if needed,
-# though direct access via request.app.state is also common.
 async def get_app_state() -> AppState:
-    # This assumes lifespan has completed initialization and set app.state
-    # A more robust version might check if app.state exists and is initialized.
+    """Dependency injector to get the application state."""
     if not hasattr(app, "state") or not isinstance(app.state, AppState):
-         # This should ideally not happen if lifespan runs correctly
          logger.critical("App state not initialized correctly!")
-         raise HTTPException(status_code=500, detail="Server state not ready")
+         raise HTTPException(status_code=503, detail="Server state not ready")
     return app.state
 
 # --- Twilio Call Webhook ---
 @app.post("/call_webhook", tags=["Twilio"], response_class=PlainTextResponse)
-async def handle_twilio_call_webhook(request: Request):
+async def handle_twilio_call_webhook(request: Request, state: AppState = Depends(get_app_state)):
     """Handles Twilio webhook for incoming/answered calls. Responds with TwiML <Stream>."""
-    state: AppState = await get_app_state() # Get access to shared services if needed
     if not state.telephony_wrapper:
         raise HTTPException(status_code=503, detail="Telephony service unavailable")
 
@@ -219,13 +218,10 @@ async def handle_twilio_call_webhook(request: Request):
         logger.error(f"[{call_sid}] Could not determine prospect phone. From={from_number}, To={to_number}")
         raise HTTPException(status_code=400, detail="Could not determine prospect phone")
 
-    # Construct WebSocket URL relative to the server's public base URL
     ws_scheme = "wss" if request.url.scheme == "https" or config.BASE_WEBHOOK_URL.startswith("https://") else "ws"
     host = request.headers.get("host", f"localhost:{config.LOCAL_SERVER_PORT}")
-    encoded_prospect_phone = prospect_phone.strip().replace('+', '%2B') # URL Encode '+'
+    encoded_prospect_phone = prospect_phone.strip().replace('+', '%2B')
     ws_path = f"/call_ws?call_sid={call_sid}&prospect_phone={encoded_prospect_phone}"
-    # Prefer relative path if BASE_WEBHOOK_URL is complex or behind proxy, let Twilio resolve full URL
-    # However, Twilio often requires absolute URLs for <Stream>
     ws_url_absolute = f"{ws_scheme}://{host}{ws_path}"
 
     response = VoiceResponse()
@@ -244,7 +240,7 @@ async def websocket_call_endpoint(
     prospect_phone: str = Query(...)
 ):
     """Handles bidirectional audio stream and manages SalesAgent lifecycle for the call."""
-    state: AppState = websocket.app.state # Access state via websocket app reference
+    state: AppState = websocket.app.state
     await websocket.accept()
     logger.info(f"[{call_sid}] WebSocket accepted for prospect: {prospect_phone}. Initializing SalesAgent.")
 
@@ -255,23 +251,18 @@ async def websocket_call_endpoint(
     current_stream_sid: Optional[str] = None
 
     async def send_audio_to_twilio_ws(csid: str, audio_chunk: bytes):
-        # Check websocket state before sending
         if csid == call_sid and current_stream_sid and websocket.client_state == WebSocketState.CONNECTED:
             try:
                 media_payload = base64.b64encode(audio_chunk).decode('utf-8')
                 await websocket.send_json({"event": "media", "streamSid": current_stream_sid, "media": {"payload": media_payload}})
-            except (WebSocketDisconnect, ConnectionResetError, RuntimeError) as ws_err:
-                logger.warning(f"[{call_sid}] WS Error sending audio (State: {websocket.client_state}): {type(ws_err).__name__}")
-                if call_sid in state.active_sales_agents: state.active_sales_agents[call_sid].signal_call_ended_externally(f"WS Error Send Audio: {type(ws_err).__name__}")
-            except Exception as e: logger.error(f"[{call_sid}] Unexpected error sending audio via WS: {e}", exc_info=True)
+            except Exception as e: logger.warning(f"[{call_sid}] WS Error sending audio: {type(e).__name__}")
 
     async def send_mark_to_twilio_ws(csid: str, mark_name: str):
         if csid == call_sid and current_stream_sid and websocket.client_state == WebSocketState.CONNECTED:
             try:
                 await websocket.send_json({"event": "mark", "streamSid": current_stream_sid, "mark": {"name": mark_name}})
                 logger.info(f"[{call_sid}] Sent mark '{mark_name}' to Twilio.")
-            except (WebSocketDisconnect, ConnectionResetError, RuntimeError) as ws_err: logger.warning(f"[{call_sid}] WS Error sending mark: {type(ws_err).__name__}")
-            except Exception as e: logger.error(f"[{call_sid}] Error sending mark via WS: {e}", exc_info=True)
+            except Exception as e: logger.warning(f"[{call_sid}] WS Error sending mark: {type(e).__name__}")
 
     voice_handler = VoiceHandler(transcript_callback=None, error_callback=None)
 
@@ -329,7 +320,7 @@ async def websocket_call_endpoint(
 @app.post("/webhooks/clay/enrichment_results", tags=["Webhooks"])
 async def handle_clay_enrichment_webhook(
     request: Request,
-    state: AppState = Depends(get_app_state), # Inject app state
+    state: AppState = Depends(get_app_state),
     x_callback_auth_token: Optional[str] = Header(None, alias=config.CLAY_CALLBACK_AUTH_HEADER_NAME)
 ):
     """Receives enriched data from Clay, validates, and passes to AcquisitionAgent."""
@@ -342,7 +333,7 @@ async def handle_clay_enrichment_webhook(
             logger.warning(f"Clay webhook: Invalid auth token.")
             raise HTTPException(status_code=403, detail="Forbidden: Invalid authentication token")
     elif not configured_secret:
-        logger.warning("Clay webhook: Callback secret not configured. Endpoint is INSECURE.")
+        logger.warning("Clay webhook: CLAY_RESULTS_CALLBACK_SECRET_TOKEN not configured. Endpoint is INSECURE.")
 
     logger.info("Received POST on /webhooks/clay/enrichment_results")
     if not state.acquisition_agent:
@@ -361,7 +352,6 @@ async def handle_clay_enrichment_webhook(
         logger.warning("Clay webhook: Payload missing '_correlation_id'. Cannot process. Payload: %s", payload)
         return FastAPIResponse(content={"status": "error", "message": "Payload missing _correlation_id"}, status_code=400)
 
-    # Use create_task to process in background and return quickly
     asyncio.create_task(state.acquisition_agent.handle_clay_enrichment_result(payload))
     logger.info(f"Clay enrichment result for correlation_id '{correlation_id}' queued for processing.")
     return FastAPIResponse(content={"status": "received", "message": "Result queued for processing."}, status_code=202)
@@ -392,9 +382,7 @@ async def trigger_outbound_call_admin(
 @app.get("/health", tags=["System"])
 async def health_check():
     """Basic health check endpoint."""
-    # Could add checks here for DB connection, essential services, etc.
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
-
 
 # --- Main Execution Block ---
 if __name__ == "__main__":
