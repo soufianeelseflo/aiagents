@@ -33,6 +33,6 @@ pytz>=2024.1,<2025.0
 cryptography>=44.0.1
 requests>=2.31.0,<2.33.0
 reportlab>=4.0.0,<4.3.0 # <-- ADDED for PDF Generation
-
+uvicorn
 # --- Other Dependencies ---
 numpy>=1.26.4,<1.27.0
