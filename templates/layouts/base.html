@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ meta_title | default('Boutique AI: Autonomous AI Solutions') }}</title>
+    {% if meta_description %}
+    <meta name="description" content="{{ meta_description }}">
+    {% endif %}
+    
+    <link rel="icon" href="{{ url_for('static', path='/favicon.ico') }}" type="image/x-icon">
+    
+    <!-- Tailwind CSS via CDN (for easy setup - replace with compiled CSS for production) -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'brand-indigo': '#2C3E50', // Deep Indigo/Space Blue
+                        'brand-electricBlue': '#00BFFF', // Electric Blue/Cyan
+                        'brand-goldAccent': '#F39C12', // Warm Gold/Orange
+                        'brand-lightGray': '#F4F6F8',
+                        'brand-mediumGray': '#BDC3C7',
+                        'brand-darkGray': '#34495E',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'], // Example: Google Font Inter
+                        headings: ['Poppins', 'sans-serif'], // Example: Google Font Poppins
+                    },
+                }
+            }
+        }
+    </script>
+    <!-- Google Fonts (Example - Inter and Poppins) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Link to your custom compiled CSS if you have one -->
+    <!-- <link href="{{ url_for('static', path='/css/style.css') }}" rel="stylesheet"> -->
+    
+    <style>
+        /* Minimal global styles if needed */
+        body {
+            @apply bg-brand-lightGray text-brand-darkGray antialiased;
+            font-family: 'Inter', sans-serif;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            font-family: 'Poppins', sans-serif;
+            @apply text-slate-900;
+        }
+        .active-nav-link {
+            @apply text-brand-electricBlue font-semibold;
+        }
+    </style>
+    {% block head_extra %}{% endblock %}
+</head>
+<body class="flex flex-col min-h-screen">
+    {% include 'partials/navbar.html' %}
+
+    <main id="main-content" class="flex-grow">
+        {% block content %}
+        <!-- Page specific content will go here -->
+        {% endblock %}
+    </main>
+
+    {% include 'partials/footer.html' %}
+
+    <!-- Global JS -->
+    <script src="{{ url_for('static', path='/js/main.js') }}"></script>
+    {% block scripts_extra %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,196 @@
+{% extends "layouts/base.html" %}
+
+{% block head_extra %}
+    <!-- Homepage specific meta tags or link rels if any -->
+{% endblock %}
+
+{% block content %}
+    <!-- Hero Section -->
+    <section class="relative bg-brand-indigo text-white overflow-hidden">
+        <div aria-hidden="true" class="absolute inset-0">
+            <!-- Conceptual background: subtle abstract AI pattern or gradient -->
+            <div class="absolute inset-0 bg-gradient-to-br from-brand-indigo via-slate-800 to-brand-indigo opacity-80"></div>
+            <!-- You could add a very subtle animated SVG pattern here -->
+        </div>
+        <div class="relative container mx-auto px-4 sm:px-6 lg:px-8 py-24 md:py-32 lg:py-40 text-center">
+            <h1 class="font-headings text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tight mb-6">
+                {{ h1_content | default("Transform Your Enterprise with Custom-Built Autonomous AI.") }}
+            </h1>
+            <p class="text-lg md:text-xl text-slate-300 mb-10 max-w-3xl mx-auto leading-relaxed">
+                Boutique AI architects and deploys high-performance AI agents – from intelligent sales callers to fully autonomous acquisition engines – all managed by our advanced AI Agent Factory and tailored to your unique operational needs.
+            </p>
+            <div class="flex flex-col sm:flex-row justify-center items-center gap-4">
+                <a href="{{ url_for('schedule_consultation_get') }}"
+                   class="inline-block bg-brand-goldAccent hover:opacity-90 text-white font-semibold py-3.5 px-8 rounded-lg text-lg shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-brand-goldAccent focus:ring-offset-2 focus:ring-offset-brand-indigo">
+                    Schedule Strategic AI Consultation
+                </a>
+                <a href="{{ url_for('solution_agent_factory') }}"
+                   class="inline-block border-2 border-slate-400 hover:bg-slate-700 hover:border-slate-700 text-white font-semibold py-3.5 px-8 rounded-lg text-lg shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2 focus:ring-offset-brand-indigo">
+                    Explore Custom AI Capabilities
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pain Points Section -->
+    <section id="challenges" class="py-16 lg:py-24 bg-white">
+        <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-12 lg:mb-16">
+                <h2 class="font-headings text-3xl sm:text-4xl font-bold text-slate-900">Is Your Business Ready for an <span class="text-brand-electricBlue">AI Evolution?</span></h2>
+                <p class="mt-4 text-lg text-slate-600 max-w-2xl mx-auto">
+                    Traditional approaches can only take you so far. If these challenges resonate, it's time to explore agentic AI.
+                </p>
+            </div>
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
+                <div class="bg-slate-50 p-6 rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300">
+                    <div class="flex-shrink-0 mb-4">
+                        <span class="inline-flex items-center justify-center h-12 w-12 rounded-full bg-brand-electricBlue text-white">
+                            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"></path></svg>
+                        </span>
+                    </div>
+                    <h3 class="font-headings text-xl font-semibold mb-2 text-brand-indigo">Scaling Complexity</h3>
+                    <p class="text-sm text-slate-600 leading-relaxed">Struggling to scale complex sales, customer service, or operational processes effectively and consistently?</p>
+                </div>
+                <div class="bg-slate-50 p-6 rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300">
+                     <div class="flex-shrink-0 mb-4">
+                        <span class="inline-flex items-center justify-center h-12 w-12 rounded-full bg-brand-electricBlue text-white">
+                           <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                        </span>
+                    </div>
+                    <h3 class="font-headings text-xl font-semibold mb-2 text-brand-indigo">Data Overload & Insight Lag</h3>
+                    <p class="text-sm text-slate-600 leading-relaxed">Data volume hindering strategic decision-making, targeted outreach, and rapid response to market changes?</p>
+                </div>
+                <div class="bg-slate-50 p-6 rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300">
+                    <div class="flex-shrink-0 mb-4">
+                        <span class="inline-flex items-center justify-center h-12 w-12 rounded-full bg-brand-electricBlue text-white">
+                            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                        </span>
+                    </div>
+                    <h3 class="font-headings text-xl font-semibold mb-2 text-brand-indigo">Innovation Bottlenecks</h3>
+                    <p class="text-sm text-slate-600 leading-relaxed">Legacy systems or manual dependencies creating bottlenecks for innovation, efficiency, and new service delivery?</p>
+                </div>
+                <div class="bg-slate-50 p-6 rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300">
+                    <div class="flex-shrink-0 mb-4">
+                        <span class="inline-flex items-center justify-center h-12 w-12 rounded-full bg-brand-electricBlue text-white">
+                            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                        </span>
+                    </div>
+                    <h3 class="font-headings text-xl font-semibold mb-2 text-brand-indigo">Seeking True Partnership</h3>
+                    <p class="text-sm text-slate-600 leading-relaxed">Looking for a transformative AI partner who understands enterprise needs, not just another off-the-shelf tool?</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Solutions Teaser Section -->
+    <section id="solutions-teaser" class="py-16 lg:py-24 bg-brand-lightGray">
+        <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-12 lg:mb-16">
+                <h2 class="font-headings text-3xl sm:text-4xl font-bold text-slate-900">Boutique AI: Your Partner in <span class="text-brand-electricBlue">Agentic Transformation</span></h2>
+                <p class="mt-4 text-lg text-slate-600 max-w-2xl mx-auto">
+                    We build and manage intelligent AI agents that integrate deeply into your operations, delivering measurable results.
+                </p>
+            </div>
+            <div class="grid md:grid-cols-1 lg:grid-cols-3 gap-8 items-stretch">
+                <!-- AI Agent Factory Card -->
+                <div class="bg-white p-8 rounded-xl shadow-xl border border-brand-electricBlue flex flex-col">
+                    <h3 class="font-headings text-2xl font-bold mb-3 text-brand-indigo">The AI Agent Factory</h3>
+                    <p class="text-sm text-slate-600 leading-relaxed mb-4 flex-grow">
+                        Our core offering. We design, provision, and manage fully autonomous AI agent workforces tailored to solve your most complex operational challenges, from workflow automation to intelligent data analysis.
+                    </p>
+                    <a href="{{ url_for('solution_agent_factory') }}" class="mt-auto inline-block text-brand-electricBlue font-semibold hover:underline">Learn about Custom Builds →</a>
+                </div>
+                <!-- AI Sales Agents Card -->
+                <div class="bg-white p-8 rounded-xl shadow-lg flex flex-col">
+                    <h3 class="font-headings text-2xl font-bold mb-3 text-brand-indigo">Custom AI Sales Agents</h3>
+                    <p class="text-sm text-slate-600 leading-relaxed mb-4 flex-grow">
+                        Deploy elite AI agents that master your product knowledge, execute nuanced sales strategies, and integrate deeply with your enterprise CRM for unparalleled outreach performance.
+                    </p>
+                    <a href="{{ url_for('solution_sales_agents') }}" class="mt-auto inline-block text-brand-electricBlue font-semibold hover:underline">Explore AI Sales Agents →</a>
+                </div>
+                <!-- AI Acquisition Agents Card -->
+                <div class="bg-white p-8 rounded-xl shadow-lg flex flex-col">
+                    <h3 class="font-headings text-2xl font-bold mb-3 text-brand-indigo">Bespoke AI Acquisition Engines</h3>
+                    <p class="text-sm text-slate-600 leading-relaxed mb-4 flex-grow">
+                        Move beyond standard lead gen. We build custom AI systems that identify, enrich, and qualify high-value prospects according to your precise market definitions and data ecosystems.
+                    </p>
+                    <a href="{{ url_for('solution_acquisition_agents') }}" class="mt-auto inline-block text-brand-electricBlue font-semibold hover:underline">Discover Acquisition Solutions →</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- The Boutique AI Difference Section -->
+    <section id="difference" class="py-16 lg:py-24 bg-white">
+        <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-12 lg:mb-16">
+                <h2 class="font-headings text-3xl sm:text-4xl font-bold text-slate-900">The Boutique AI Difference: <span class="text-brand-electricBlue">Beyond Automation, True Autonomy</span></h2>
+            </div>
+            <div class="grid md:grid-cols-2 gap-x-8 gap-y-10">
+                <div>
+                    <h3 class="font-headings text-xl font-semibold text-brand-indigo mb-2">Deep Specialization & Customization</h3>
+                    <p class="text-slate-600 leading-relaxed">Our agents are not generic tools; they are custom-architected systems, trained on your data, aligned with your processes, and designed to achieve your specific business outcomes.</p>
+                </div>
+                <div>
+                    <h3 class="font-headings text-xl font-semibold text-brand-indigo mb-2">Enterprise-Grade Architecture</h3>
+                    <p class="text-slate-600 leading-relaxed">We build for scalability, security, and resilience. Our AI-managed deployment ensures your agents operate reliably within your existing or a dedicated cloud infrastructure.</p>
+                </div>
+                <div>
+                    <h3 class="font-headings text-xl font-semibold text-brand-indigo mb-2">Measurable ROI & Performance</h3>
+                    <p class="text-slate-600 leading-relaxed">Every solution is designed with clear KPIs and ROI projections. We focus on delivering tangible business value, from cost reduction to revenue acceleration.</p>
+                </div>
+                <div>
+                    <h3 class="font-headings text-xl font-semibold text-brand-indigo mb-2">Collaborative Partnership & Expertise</h3>
+                    <p class="text-slate-600 leading-relaxed">We work as an extension of your team, bringing deep expertise in AI, agentic systems, and process automation to co-create solutions that drive lasting impact.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Case Study Teaser Section -->
+    <section id="case-study-teaser" class="py-16 lg:py-24 bg-brand-lightGray">
+        <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-12 lg:mb-16">
+                <h2 class="font-headings text-3xl sm:text-4xl font-bold text-slate-900">Real Results with <span class="text-brand-electricBlue">Boutique AI</span></h2>
+                <p class="mt-4 text-lg text-slate-600 max-w-2xl mx-auto">
+                    See how we've helped businesses like yours achieve transformative outcomes.
+                </p>
+            </div>
+            <div class="grid md:grid-cols-2 gap-8">
+                {% for study in [
+                    {"title": "FinTech Client Onboarding Automation", "summary": "Reduced client onboarding time from 3 days to 4 hours, improving CX and freeing up 2 FTEs.", "image_url": "/static/images/case-study-fintech.jpg", "link": url_for('case_studies') + '#fintech-onboarding-automation'},
+                    {"title": "SaaS High-Value Lead Generation", "summary": "Increased MQL to SQL conversion by 40% and generated $2M in new pipeline within 6 months.", "image_url": "/static/images/case-study-saas.jpg", "link": url_for('case_studies') + '#saas-lead-qualification'}
+                ] %}
+                <div class="bg-white rounded-xl shadow-lg overflow-hidden flex flex-col">
+                    <img src="{{ study.image_url | default('https://placehold.co/600x400/2C3E50/FFFFFF/png?text=Case+Study') }}" alt="{{ study.title }}" class="w-full h-64 object-cover">
+                    <div class="p-6 flex flex-col flex-grow">
+                        <h3 class="font-headings text-xl font-semibold text-brand-indigo mb-3">{{ study.title }}</h3>
+                        <p class="text-sm text-slate-600 leading-relaxed mb-4 flex-grow">{{ study.summary }}</p>
+                        <a href="{{ study.link }}" class="mt-auto inline-block text-brand-electricBlue font-semibold hover:underline">Read Full Story →</a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            <div class="text-center mt-12">
+                <a href="{{ url_for('case_studies') }}"
+                   class="inline-block bg-brand-electricBlue hover:opacity-90 text-white font-semibold py-3 px-8 rounded-lg text-base shadow-md transition-all duration-300 ease-in-out transform hover:scale-105">
+                    View All Case Studies
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Final Call to Action Section -->
+    <section class="py-20 md:py-28 bg-brand-indigo text-white">
+        <div class="container mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <h2 class="font-headings text-3xl sm:text-4xl md:text-5xl font-bold mb-6">Ready to Design Your Autonomous Future?</h2>
+            <p class="text-lg text-slate-300 mb-10 max-w-2xl mx-auto leading-relaxed">
+                Partner with Boutique AI to leverage the full potential of custom-built, AI-managed agentic systems. Let's discuss how we can solve your most pressing challenges and unlock new levels of efficiency and growth.
+            </p>
+            <a href="{{ url_for('schedule_consultation_get') }}"
+               class="inline-block bg-brand-goldAccent hover:opacity-90 text-white font-bold py-4 px-10 rounded-lg text-xl shadow-xl transition-all duration-300 ease-in-out transform hover:scale-110 focus:outline-none focus:ring-2 focus:ring-brand-goldAccent focus:ring-offset-2 focus:ring-offset-brand-indigo">
+                Book Your AI Strategy Session
+            </a>
+        </div>
+    </section>
+{% endblock %}

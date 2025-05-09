@@ -1,10 +1,11 @@
-# core/services/llm_client.py
+# boutique_ai_project/core/services/llm_client.py
+
 import logging
 import json
 import hashlib
 import base64
 from typing import List, Dict, Optional, Any, Union
-from openai import AsyncOpenAI, OpenAIError
+from openai import AsyncOpenAI, OpenAIError, APIResponse
 from openai.types.chat import ChatCompletion
 from lru import LRU
 
@@ -12,15 +13,21 @@ import config # Root config
 
 logger = logging.getLogger(__name__)
 
+# --- Custom Exception ---
+class LLMClientSetupError(Exception):
+    """Custom exception for errors during LLMClient setup or critical configuration issues."""
+    pass
+
 class LLMClient:
     """
-    Client for OpenRouter OpenAI-compatible API. Includes caching and multi-modal support.
+    Client for OpenRouter OpenAI-compatible API. Includes caching and multi-modal support. (Level 45)
     """
 
     def __init__(self):
         if not config.OPENROUTER_API_KEY:
             logger.critical("CRITICAL: OPENROUTER_API_KEY not configured.")
-            raise ValueError("OPENROUTER_API_KEY is required.")
+            # Use the new custom exception
+            raise LLMClientSetupError("OPENROUTER_API_KEY is required for LLMClient.")
 
         self.default_headers: Dict[str, str] = {}
         if config.OPENROUTER_SITE_URL: self.default_headers["HTTP-Referer"] = config.OPENROUTER_SITE_URL
@@ -34,25 +41,20 @@ class LLMClient:
                 max_retries=config.OPENROUTER_CLIENT_MAX_RETRIES,
                 timeout=config.OPENROUTER_CLIENT_TIMEOUT_SECONDS
             )
-            logger.info(
-                f"LLMClient initialized for OpenRouter. "
-                f"Default Conv: {config.OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL}, "
-                f"Strategy: {config.OPENROUTER_DEFAULT_STRATEGY_MODEL}, "
-                f"Analysis: {config.OPENROUTER_DEFAULT_ANALYSIS_MODEL}, "
-                f"Vision: {config.OPENROUTER_DEFAULT_VISION_MODEL}"
-            )
+            logger.info(f"LLMClient initialized for OpenRouter. Default Conv Model: {config.OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL}")
             if self.default_headers: logger.debug(f"Using default headers: {self.default_headers}")
 
             self.response_cache = LRU(config.LLM_CACHE_SIZE)
             logger.info(f"Initialized LLM response cache with size {config.LLM_CACHE_SIZE}.")
-
         except Exception as e:
             logger.critical(f"Failed to initialize AsyncOpenAI client for OpenRouter: {e}", exc_info=True)
-            raise ConnectionError("Could not initialize LLMClient for OpenRouter.") from e
+            # Use the new custom exception
+            raise LLMClientSetupError(f"Could not initialize LLMClient for OpenRouter: {e}") from e
 
     def _generate_cache_key(
         self, model: str, messages: List[Dict[str, Any]], temperature: float, max_tokens: Optional[int]
     ) -> Optional[str]:
+        """Generates cache key, hashing image data representations. Skips caching for image requests."""
         try:
             serializable_messages = []
             has_images = False
@@ -61,16 +63,20 @@ class LLMClient:
                 if isinstance(s_msg.get("content"), list):
                     s_content_list = []
                     for part in s_msg["content"]:
-                        s_part_item = part.copy() # Use a different variable name here
+                        s_part = part.copy()
                         if part.get("type") == "image_url" and isinstance(part.get("image_url"), dict):
                             has_images = True
-                            # No need to hash image URLs for cache key if we're skipping cache for images
-                        s_content_list.append(s_part_item)
+                            img_url_data = part["image_url"].get("url", "")
+                            if img_url_data.startswith("data:image"):
+                                base64_content = img_url_data.split(",", 1)[-1]
+                                s_part["image_url"]["url_hash"] = hashlib.sha256(base64_content.encode('utf-8')).hexdigest()
+                                if "url" in s_part["image_url"]: del s_part["image_url"]["url"]
+                        s_content_list.append(s_part)
                     s_msg["content"] = s_content_list
                 serializable_messages.append(s_msg)
-
+            
             if has_images: # Do not cache multi-modal requests by default
-                logger.debug("Skipping cache key generation for request containing images.")
+                logger.debug("Skipping cache key generation for multi-modal request.")
                 return None
 
             payload_str = json.dumps(
@@ -89,98 +95,120 @@ class LLMClient:
         temperature: float = 0.5,
         max_tokens: Optional[int] = 1500,
         use_cache: bool = True,
-        purpose: str = "general"
+        purpose: str = "general" # 'general', 'strategy', 'analysis', 'vision'
     ) -> Optional[str]:
-        final_model: Optional[str] = model
-        is_multimodal_request = any(
-            isinstance(m.get("content"), list) and
-            any(p.get("type") == "image_url" for p in m["content"])
-            for m in messages
-        )
+        """Generates LLM response, supports multi-modal, selects model based on purpose."""
+        
+        # Determine model
+        if model: final_model = model
+        elif purpose == "strategy": final_model = config.OPENROUTER_DEFAULT_STRATEGY_MODEL
+        elif purpose == "analysis": final_model = config.OPENROUTER_DEFAULT_ANALYSIS_MODEL
+        elif purpose == "vision": final_model = config.OPENROUTER_DEFAULT_VISION_MODEL
+        else: final_model = config.OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL
 
-        if not final_model:
-            if is_multimodal_request:
-                final_model = config.OPENROUTER_DEFAULT_VISION_MODEL
-                logger.info(f"Multimodal request detected. Using vision model: {final_model}")
-                purpose = "vision" # Ensure purpose matches
-            elif purpose == "strategy": final_model = config.OPENROUTER_DEFAULT_STRATEGY_MODEL
-            elif purpose == "analysis": final_model = config.OPENROUTER_DEFAULT_ANALYSIS_MODEL
-            else: final_model = config.OPENROUTER_DEFAULT_CONVERSATIONAL_MODEL
+        is_multimodal_request = any(isinstance(m.get("content"), list) and any(p.get("type") == "image_url" for p in m["content"]) for m in messages)
 
-        if not final_model:
-             logger.error(f"No suitable LLM model determined for purpose '{purpose}' or explicit model '{model}'. Check OpenRouter model name configurations.")
-             return "Error: No suitable LLM model configured."
+        if is_multimodal_request and purpose != "vision":
+            logger.warning(f"Request contains images but purpose is '{purpose}'. Using VISION model '{config.OPENROUTER_DEFAULT_VISION_MODEL}' instead.")
+            final_model = config.OPENROUTER_DEFAULT_VISION_MODEL
+        
+        if not final_model: # Check if a model was determined
+             logger.error(f"No suitable LLM model found for purpose '{purpose}' (is vision model configured if needed?).")
+             return f"Error: No suitable LLM model configured for purpose '{purpose}'."
 
+        # Caching logic (skip cache for vision requests)
         cache_key = None
         effective_use_cache = use_cache and not is_multimodal_request
-
         if effective_use_cache:
             cache_key = self._generate_cache_key(final_model, messages, temperature, max_tokens)
             if cache_key and cache_key in self.response_cache:
-                logger.info(f"LLM Cache HIT for model '{final_model}' (Purpose: {purpose}).")
+                logger.info(f"LLM Cache HIT for model '{final_model}'.")
                 return self.response_cache[cache_key]
             elif cache_key:
-                 logger.info(f"LLM Cache MISS for model '{final_model}' (Purpose: {purpose}).")
+                 logger.info(f"LLM Cache MISS for model '{final_model}'.")
 
-        logger.info(f"Generating LLM response (Model: '{final_model}', Purpose: {purpose}, Temp: {temperature}, MaxTokens: {max_tokens}, Cache: {effective_use_cache}).")
-        
-        # Truncate message content for logging if too long
-        log_messages_summary = []
-        for msg in messages:
-            content_summary = str(msg.get('content', ''))
-            if len(content_summary) > 100:
-                content_summary = content_summary[:100] + "..."
-            log_messages_summary.append({"role": msg["role"], "content_summary": content_summary})
+        logger.info(f"Generating LLM response via OpenRouter (Model: '{final_model}', Purpose: {purpose}, Temp: {temperature}, MaxTokens: {max_tokens}).")
+        log_messages_summary = [{"role": msg["role"], "content_summary": f"{len(str(msg.get('content', '')))} chars/parts"} for msg in messages]
         logger.debug(f"Input messages (summary): {log_messages_summary}")
 
         try:
-            chat_completion_params: Dict[str, Any] = {
-                "model": final_model, "messages": messages, "temperature": temperature
-            }
+            chat_completion_params = { "model": final_model, "messages": messages, "temperature": temperature }
             if max_tokens is not None: chat_completion_params["max_tokens"] = max_tokens
 
-            response: ChatCompletion = await self.client.chat.completions.create(**chat_completion_params)
+            response: ChatCompletion = await self.client.chat.completions.create(**chat_completion_params) # type: ignore
 
             if response.choices and response.choices[0].message and response.choices[0].message.content:
                 ai_response_text = response.choices[0].message.content.strip()
                 finish_reason = response.choices[0].finish_reason
-                usage = response.usage
-                logger.info(
-                    f"LLM response received ({len(ai_response_text)} chars). Finish: {finish_reason}. "
-                    f"Usage: Prompt={usage.prompt_tokens if usage else 'N/A'}, Completion={usage.completion_tokens if usage else 'N/A'}, Total={usage.total_tokens if usage else 'N/A'}"
-                )
-                if finish_reason == "length":
-                    logger.warning(f"LLM response for model '{final_model}' was truncated due to max_tokens ({max_tokens}).")
+                logger.info(f"LLM response received ({len(ai_response_text)} chars). Finish: {finish_reason}")
+                logger.debug(f"LLM Raw Response Text: {ai_response_text[:500]}")
+                if finish_reason == "length": logger.warning(f"LLM response truncated due to max_tokens ({max_tokens}).")
 
                 if effective_use_cache and cache_key:
                     self.response_cache[cache_key] = ai_response_text
+                    logger.debug(f"Stored text-only response in cache.")
                 return ai_response_text
             else:
-                logger.warning(f"LLM response from model '{final_model}' was empty/malformed. Full response: {response.model_dump_json(indent=2)}")
+                logger.warning("LLM response empty/malformed.")
+                logger.debug(f"Full LLM API response: {response.model_dump_json(indent=2)}")
                 return None
         except OpenAIError as e:
-            status_code = getattr(e, 'status_code', 'N/A')
-            error_body = getattr(e, 'body', {}) or {}
-            error_message_detail = str(error_body.get('error', {}).get('message', str(e))) if isinstance(error_body.get('error'), dict) else str(e.body or e)
-            logger.error(f"OpenRouter API error (Model: '{final_model}'): Status {status_code} - Message: {error_message_detail}")
-            # Construct a user-friendly error message
-            user_error_message = f"Error: LLM API failed (Model: {final_model}, Status: {status_code})."
-            if status_code == 401: user_error_message = "Error: OpenRouter Authentication failed. Check API Key."
-            elif status_code == 402: user_error_message = "Error: OpenRouter quota/billing issue."
-            elif status_code == 429: user_error_message = "Error: OpenRouter rate limit/overload for model."
-            elif "context_length_exceeded" in error_message_detail.lower(): user_error_message = f"Error: Input too long for model '{final_model}'."
-            return user_error_message
+            status_code = getattr(e, 'status_code', 'N/A'); error_body = getattr(e, 'body', {}) or {}
+            error_message = error_body.get('error', {}).get('message', str(e)) if isinstance(error_body.get('error'), dict) else str(e)
+            logger.error(f"OpenRouter API error: Status {status_code} - Message: {error_message}", exc_info=False)
+            if status_code == 401: return "Error: OpenRouter Authentication failed."
+            if status_code == 402: return "Error: OpenRouter quota/billing issue."
+            if status_code == 429: return "Error: OpenRouter rate limit/overload."
+            if status_code == 400 and "moderation" in error_message.lower(): return "Error: Content moderation."
+            if "context_length_exceeded" in error_message.lower(): return "Error: Input too long for model."
+            return f"Error: LLM API failed (Status: {status_code})."
         except Exception as e:
-            logger.error(f"Unexpected error during LLM generation (Model: '{final_model}'): {e}", exc_info=True)
+            logger.error(f"Unexpected error during LLM generation: {e}", exc_info=True)
             return "Error: Unexpected LLM client error."
 
-# (Test function remains similar, ensure it's commented out for deployment)
-# if __name__ == "__main__":
-#     import asyncio
-#     from dotenv import load_dotenv, find_dotenv
-#     if find_dotenv(): load_dotenv(find_dotenv(raise_error_if_not_found=False, usecwd=True))
-#     async def _test_llm_client_final():
-#         # ... (test logic as before) ...
-#         pass
-#     # asyncio.run(_test_llm_client_final())
-#     print("LLMClient defined.")
+# --- Test function ---
+async def _test_llm_client_final():
+    print("--- Testing LLMClient (FINAL - Multi-Modal) ---")
+    # Ensure OPENROUTER_API_KEY is set in environment for this test
+    if not os.getenv("OPENROUTER_API_KEY"):
+        print("Skipping test: OPENROUTER_API_KEY not set in environment.")
+        return
+
+    try:
+        llm = LLMClient()
+    except LLMClientSetupError as e:
+        print(f"LLM Client Setup Failed: {e}")
+        return
+        
+    dummy_image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+
+    print("\n1. Testing Text (Strategy Model)...")
+    text_messages = [{"role": "user", "content": "Suggest 3 strategies for cold outreach."}]
+    response1 = await llm.generate_response(messages=text_messages, purpose="strategy", max_tokens=150)
+    print(f"  Response 1 (Strategy): {response1}")
+
+    print("\n2. Testing Vision Model...")
+    vision_model_configured = config.OPENROUTER_DEFAULT_VISION_MODEL
+    if not vision_model_configured or "google/gemini-pro-vision" not in vision_model_configured : # Example check
+        print(f"  Skipping vision test: Vision model '{vision_model_configured}' might not be fully configured or suitable for basic image test.")
+        # return # Comment out if you want to proceed with default even if it's not explicitly vision
+
+    multimodal_messages = [{"role": "user", "content": [
+                {"type": "text", "text": "What color is the tiny square in the image?"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{dummy_image_base64}"}}
+            ]}]
+    response2 = await llm.generate_response(messages=multimodal_messages, purpose="vision", max_tokens=50)
+    print(f"  Response 2 (Vision): {response2}")
+
+    print("\n3. Testing Caching (Second call to text prompt)...")
+    response3 = await llm.generate_response(messages=text_messages, purpose="strategy", max_tokens=150, use_cache=True)
+    print(f"  Response 3 (Strategy, cached): {response3}")
+
+if __name__ == "__main__":
+    import asyncio
+    # from dotenv import load_dotenv # Already done in config.py at import time
+    # load_dotenv()
+    # To run test: Ensure OPENROUTER_API_KEY is set in your .env file
+    # asyncio.run(_test_llm_client_final())
+    print("LLMClient (FINAL - Multi-Modal) defined. Test requires OpenRouter key.")
+    print("Run `python -m core.services.llm_client` to test (ensure .env is loaded).")

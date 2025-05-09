@@ -1,0 +1,95 @@
+{% extends "layouts/base.html" %}
+
+{% block content %}
+<section class="py-16 lg:py-24 bg-brand-lightGray">
+    <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="max-w-3xl mx-auto text-center">
+            <h1 class="font-headings text-4xl sm:text-5xl font-bold text-slate-900 mb-4">Connect with Our AI Solutions Architects</h1>
+            <p class="text-lg text-slate-600 leading-relaxed">
+                Have a question, a project idea, or ready to explore how autonomous AI can transform your business? We're here to help.
+            </p>
+        </div>
+    </div>
+</section>
+
+<section class="pb-16 lg:pb-24">
+    <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="max-w-2xl mx-auto bg-white p-8 sm:p-10 rounded-xl shadow-2xl">
+            {% if success_message %}
+                <div class="mb-6 p-4 bg-green-100 border border-green-400 text-green-700 rounded-md">
+                    <h3 class="font-semibold text-lg">Message Sent!</h3>
+                    <p>{{ success_message }}</p>
+                </div>
+            {% elif error_message %}
+                 <div class="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-md">
+                    <h3 class="font-semibold text-lg">Submission Error</h3>
+                    <p>{{ error_message }}</p>
+                </div>
+            {% endif %}
+
+            {% if not success_message %}
+            <form action="{{ url_for('contact_post') }}" method="post" class="space-y-6">
+                <div>
+                    <label for="fullName" class="block text-sm font-medium text-slate-700 mb-1">Full Name</label>
+                    <input type="text" name="fullName" id="fullName" value="{{ form_data.get('fullName', '') }}" required
+                           class="mt-1 block w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-brand-electricBlue focus:border-brand-electricBlue sm:text-sm">
+                    {% if errors and errors.get('fullName') %}<p class="text-xs text-red-500 mt-1">{{ errors.get('fullName') }}</p>{% endif %}
+                </div>
+
+                <div>
+                    <label for="workEmail" class="block text-sm font-medium text-slate-700 mb-1">Work Email</label>
+                    <input type="email" name="workEmail" id="workEmail" value="{{ form_data.get('workEmail', '') }}" required
+                           class="mt-1 block w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-brand-electricBlue focus:border-brand-electricBlue sm:text-sm">
+                    {% if errors and errors.get('workEmail') %}<p class="text-xs text-red-500 mt-1">{{ errors.get('workEmail') }}</p>{% endif %}
+                </div>
+
+                <div>
+                    <label for="companyName" class="block text-sm font-medium text-slate-700 mb-1">Company Name</label>
+                    <input type="text" name="companyName" id="companyName" value="{{ form_data.get('companyName', '') }}" required
+                           class="mt-1 block w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-brand-electricBlue focus:border-brand-electricBlue sm:text-sm">
+                </div>
+                
+                <div>
+                    <label for="phone" class="block text-sm font-medium text-slate-700 mb-1">Phone (Optional)</label>
+                    <input type="tel" name="phone" id="phone" value="{{ form_data.get('phone', '') }}"
+                           class="mt-1 block w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-brand-electricBlue focus:border-brand-electricBlue sm:text-sm">
+                </div>
+
+                <div>
+                    <label for="helpReason" class="block text-sm font-medium text-slate-700 mb-1">How can we help?</label>
+                    <select id="helpReason" name="helpReason" required
+                            class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-slate-300 focus:outline-none focus:ring-brand-electricBlue focus:border-brand-electricBlue sm:text-sm rounded-md">
+                        <option value="" disabled {% if not form_data.get('helpReason') %}selected{% endif %}>Select a reason...</option>
+                        <option value="Custom AI Agent Factory Inquiry" {% if form_data.get('helpReason') == "Custom AI Agent Factory Inquiry" %}selected{% endif %}>Custom AI Agent Factory Inquiry</option>
+                        <option value="Specialized AI Sales Agent Solutions" {% if form_data.get('helpReason') == "Specialized AI Sales Agent Solutions" %}selected{% endif %}>Specialized AI Sales Agent Solutions</option>
+                        <option value="Advanced AI Acquisition Systems" {% if form_data.get('helpReason') == "Advanced AI Acquisition Systems" %}selected{% endif %}>Advanced AI Acquisition Systems</option>
+                        <option value="Partnership Opportunities" {% if form_data.get('helpReason') == "Partnership Opportunities" %}selected{% endif %}>Partnership Opportunities</option>
+                        <option value="Support Request" {% if form_data.get('helpReason') == "Support Request" %}selected{% endif %}>Support Request</option>
+                        <option value="General Inquiry" {% if form_data.get('helpReason') == "General Inquiry" %}selected{% endif %}>General Inquiry</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label for="message" class="block text-sm font-medium text-slate-700 mb-1">Message</label>
+                    <textarea id="message" name="message" rows="4" required
+                              class="mt-1 block w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-brand-electricBlue focus:border-brand-electricBlue sm:text-sm">{{ form_data.get('message', '') }}</textarea>
+                </div>
+
+                <div>
+                    <button type="submit"
+                            class="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-base font-medium text-white bg-brand-electricBlue hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-electricBlue transition-all duration-300 ease-in-out transform hover:scale-105">
+                        Send Message
+                    </button>
+                </div>
+            </form>
+            {% endif %} {# End if not success_message #}
+
+            <div class="mt-12 text-center">
+                <h3 class="font-headings text-xl font-semibold text-slate-800 mb-3">Other Ways to Reach Us</h3>
+                <p class="text-slate-600">Email: <a href="mailto:hello@yourboutiqueai.com" class="text-brand-electricBlue hover:underline">hello@yourboutiqueai.com</a></p>
+                <p class="text-slate-600">Phone: <a href="tel:+15551234567" class="text-brand-electricBlue hover:underline">+1 (555) 123-4567</a> (Conceptual)</p>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

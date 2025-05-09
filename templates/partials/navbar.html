@@ -1,0 +1,73 @@
+<header class="bg-brand-indigo text-white shadow-lg sticky top-0 z-50">
+    <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="flex items-center justify-between h-20">
+            <div class="flex items-center">
+                <a href="{{ url_for('home') }}" class="flex-shrink-0">
+                    <!-- Replace with your actual logo if you have one -->
+                    <!-- <img class="h-10 w-auto" src="{{ url_for('static', path='/images/logo.svg') }}" alt="Boutique AI"> -->
+                    <span class="font-headings text-2xl font-bold tracking-tight hover:text-brand-electricBlue transition-colors">Boutique AI</span>
+                </a>
+            </div>
+            <nav class="hidden md:flex space-x-6 items-center">
+                <a href="{{ url_for('solutions_overview') }}" class="px-3 py-2 rounded-md text-sm font-medium hover:text-brand-electricBlue transition-colors {% if page_name == 'solutions_overview' %}active-nav-link{% endif %}">Solutions</a>
+                <a href="{{ url_for('our_approach') }}" class="px-3 py-2 rounded-md text-sm font-medium hover:text-brand-electricBlue transition-colors {% if page_name == 'our_approach' %}active-nav-link{% endif %}">Our Approach</a>
+                <a href="{{ url_for('case_studies') }}" class="px-3 py-2 rounded-md text-sm font-medium hover:text-brand-electricBlue transition-colors {% if page_name == 'case_studies' %}active-nav-link{% endif %}">Case Studies</a>
+                <a href="{{ url_for('about_us') }}" class="px-3 py-2 rounded-md text-sm font-medium hover:text-brand-electricBlue transition-colors {% if page_name == 'about_us' %}active-nav-link{% endif %}">About Us</a>
+                <a href="{{ url_for('contact_get') }}" class="px-3 py-2 rounded-md text-sm font-medium hover:text-brand-electricBlue transition-colors {% if page_name == 'contact' %}active-nav-link{% endif %}">Contact</a>
+                <a href="{{ url_for('schedule_consultation_get') }}"
+                   class="ml-4 bg-brand-goldAccent hover:opacity-90 text-white font-semibold py-2.5 px-5 rounded-lg transition-all duration-300 ease-in-out transform hover:scale-105 text-sm">
+                    Schedule Consultation
+                </a>
+            </nav>
+            <!-- Mobile Menu Button -->
+            <div class="md:hidden">
+                <button id="mobile-menu-button" type="button" class="inline-flex items-center justify-center p-2 rounded-md text-slate-300 hover:text-white hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white" aria-controls="mobile-menu" aria-expanded="false">
+                    <span class="sr-only">Open main menu</span>
+                    <svg id="menu-icon-open" class="block h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                    </svg>
+                    <svg id="menu-icon-close" class="hidden h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile Menu, show/hide based on menu state. -->
+    <div class="md:hidden hidden" id="mobile-menu">
+        <div class="px-2 pt-2 pb-3 space-y-1 sm:px-3">
+            <a href="{{ url_for('solutions_overview') }}" class="block px-3 py-2 rounded-md text-base font-medium hover:bg-slate-700 hover:text-white {% if page_name == 'solutions_overview' %}bg-slate-700 text-white{% else %}text-slate-300{% endif %}">Solutions</a>
+            <a href="{{ url_for('our_approach') }}" class="block px-3 py-2 rounded-md text-base font-medium hover:bg-slate-700 hover:text-white {% if page_name == 'our_approach' %}bg-slate-700 text-white{% else %}text-slate-300{% endif %}">Our Approach</a>
+            <a href="{{ url_for('case_studies') }}" class="block px-3 py-2 rounded-md text-base font-medium hover:bg-slate-700 hover:text-white {% if page_name == 'case_studies' %}bg-slate-700 text-white{% else %}text-slate-300{% endif %}">Case Studies</a>
+            <a href="{{ url_for('about_us') }}" class="block px-3 py-2 rounded-md text-base font-medium hover:bg-slate-700 hover:text-white {% if page_name == 'about_us' %}bg-slate-700 text-white{% else %}text-slate-300{% endif %}">About Us</a>
+            <a href="{{ url_for('contact_get') }}" class="block px-3 py-2 rounded-md text-base font-medium hover:bg-slate-700 hover:text-white {% if page_name == 'contact' %}bg-slate-700 text-white{% else %}text-slate-300{% endif %}">Contact</a>
+        </div>
+        <div class="pt-4 pb-3 border-t border-slate-700">
+            <div class="flex items-center px-5">
+                 <a href="{{ url_for('schedule_consultation_get') }}"
+                   class="w-full text-center bg-brand-goldAccent hover:opacity-90 text-white font-semibold py-2.5 px-5 rounded-lg transition-all duration-300 ease-in-out transform hover:scale-105 text-base">
+                    Schedule Consultation
+                </a>
+            </div>
+        </div>
+    </div>
+</header>
+
+<script>
+    // Basic mobile menu toggle
+    const menuButton = document.getElementById('mobile-menu-button');
+    const mobileMenu = document.getElementById('mobile-menu');
+    const menuIconOpen = document.getElementById('menu-icon-open');
+    const menuIconClose = document.getElementById('menu-icon-close');
+
+    if (menuButton && mobileMenu && menuIconOpen && menuIconClose) {
+        menuButton.addEventListener('click', () => {
+            const expanded = menuButton.getAttribute('aria-expanded') === 'true' || false;
+            menuButton.setAttribute('aria-expanded', !expanded);
+            mobileMenu.classList.toggle('hidden');
+            menuIconOpen.classList.toggle('hidden');
+            menuIconClose.classList.toggle('hidden');
+        });
+    }
+</script>

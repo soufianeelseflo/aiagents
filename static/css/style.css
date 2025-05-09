@@ -1,0 +1,17 @@
+/* static/css/style.css */
+
+/* If you are NOT using the Tailwind CDN and are compiling your Tailwind CSS,
+   this file would be the OUTPUT of your Tailwind build process.
+   Example: npx tailwindcss -i ./path/to/your/input.css -o ./static/css/style.css */
+
+/* For now, if using CDN, this can be empty or contain very specific overrides. */
+
+/* Example custom style:
+.custom-gradient-text {
+    background: linear-gradient(to right, var(--brand-electricBlue), var(--brand-goldAccent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    text-fill-color: transparent;
+}
+*/
