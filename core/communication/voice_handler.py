@@ -3,15 +3,17 @@
 import asyncio
 import logging
 import base64
-from typing import Callable, Optional, AsyncGenerator, Coroutine, Any # Added Coroutine, Any
-from deepgram import (
+from typing import Callable, Optional, AsyncGenerator, Coroutine, Any # Ensure this is complete
+from deepgram import
+
+print(f"DEEPGRAM SDK VERSION: {deepgram.__version__}") (
     DeepgramClient,
     DeepgramClientOptions,
     LiveTranscriptionEvents,
     LiveOptions,
     SpeakOptions,
-    SpeakStreamSource,
-    StreamSource # Keep this import if used elsewhere, maybe not needed now
+    SpeakStreamSource, # This is what it's complaining about
+    StreamSource # This might be PrerecordedSource or similar now, but not the cause of current error
 )
 
 # Import configuration centrally
