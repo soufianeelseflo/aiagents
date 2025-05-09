@@ -2,55 +2,54 @@
 # --------------------------------------------------------------------------------
 # Filename: requirements.txt
 # Description: Python dependencies for the Boutique AI System.
-# Version: 4.7 (Upgrading supabase-py to resolve httpx conflict)
+# Version: 4.8 (Ignis Full System Recalibration)
 
 # --- Core Framework & Web ---
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
+fastapi>=0.110.0,<0.111.0 # Pinned to a recent stable minor version
+uvicorn[standard]>=0.27.0,<0.28.0 # Pinned, [standard] includes websockets
 
-# --- HTTP Client (Targeting a version compatible with modern libraries) ---
-# deepgram-sdk (>=3.4.0) requires httpx ^0.25.2
-# openai (>=1.x) is flexible (httpx >=0.23.0, <1.0.0)
-# We will try to use httpx that satisfies deepgram and openai, and then update supabase.
-httpx>=0.25.2,<1.0.0 # Allows deepgram-sdk and openai to pick a compatible version
+# --- HTTP Client (Crucial Pin - for Supabase, OpenAI, Deepgram if it used it) ---
+# supabase-py 2.x series is generally compatible with more recent httpx
+# openai 1.x is flexible with httpx >=0.23.0
+# deepgram-sdk 3.x uses its own aiohttp or httpx based on version.
+# Let's allow a slightly broader httpx range compatible with recent supabase-py and openai.
+httpx>=0.25.2,<1.0.0
 
 # --- AI & LLMs ---
-openai>=1.30.0,<2.0.0 # Keeping openai modern and flexible with httpx
+openai>=1.20.0,<2.0.0 # Allowing recent 1.x versions
 
 # --- Database ---
-# MODIFIED: Upgrade supabase-py to a 2.x version.
-# Recent 2.x versions (e.g., 2.15.0 from March 2025 in search results)
-# should use newer sub-dependencies (like gotrue-py >= 2.x)
-# that are compatible with httpx >= 0.25.x.
-supabase>=2.10.0,<3.0.0 # Targeting a recent stable 2.x range from late 2024/early 2025
+# For supabase-py 2.x, which is generally more up-to-date with httpx
+supabase>=2.5.0,<2.16.0 # Targeting a recent stable 2.x range (e.g. from late 2024 to Q1 2025)
 
 # --- External Services ---
-deepgram-sdk>=3.7.0,<3.8.0 # Using a recent version from your logs, compatible with httpx >=0.25.2
-twilio<9.4.0,>=9.0.0
-websockets<13.2,>=12.0
+deepgram-sdk>=3.7.0,<3.8.0 # This version uses httpx ^0.25.2, compatible with above httpx
+twilio>=9.0.0,<9.4.0 # Stable range
+websockets>=12.0,<13.0 # Usually fine, uvicorn[standard] can also manage this
 
 # --- Other Core Libraries ---
-sqlalchemy<2.1.0,>=2.0.35
-asyncpg<0.31.0,>=0.29.0
-psutil<6.1.0,>=5.9.8
-aiohttp<3.11.0,>=3.9.5
+sqlalchemy>=2.0.25,<2.1.0 # Stable 2.0.x
+asyncpg>=0.28.0,<0.30.0 # Recent stable
+psutil>=5.9.0,<6.1.0
+aiohttp>=3.9.0,<3.10.0 # For DataWrapper and Twilio's aiohttp-retry
 
 # --- Web Interaction & Scraping ---
-playwright<1.48.0,>=1.44.0
-beautifulsoup4<4.13.0,>=4.12.3
-Faker<27.0.0,>=24.0.0
-fake-useragent>=1.5.1
+playwright>=1.40.0,<1.48.0 # Broader stable range
+beautifulsoup4>=4.12.0,<4.13.0
+Faker>=24.0.0,<27.0.0
+fake-useragent>=1.5.0,<2.0.0
 
 # --- Utilities ---
-pydantic-settings<2.4.0,>=2.0.0
-tenacity<9.1.0,>=8.2.0
-pybreaker<1.3.0,>=1.1.0
-python-dotenv<1.1.0,>=1.0.1
-pytz<2025.0,>=2024.1
-cryptography>=44.0.1 # Ensure recent enough for Python 3.11
-requests<2.33.0,>=2.31.0
+pydantic-settings>=2.1.0,<2.4.0
+tenacity>=8.2.0,<9.0.0
+pybreaker>=1.1.0,<1.3.0
+python-dotenv>=1.0.0,<1.1.0
+pytz>=2024.1,<2025.0
+cryptography>=42.0.0 # Ensure recent enough for Python 3.11 and security
+requests>=2.31.0,<2.33.0
 
 # --- Other Dependencies ---
-numpy<1.27.0,>=1.26.4
-docker>=7.0.0
+numpy>=1.26.0,<1.27.0
+docker>=7.0.0,<8.0.0 # For DeploymentManager
+lru-dict>=1.1.8,<1.3.0 # For LLMClient cache (explicitly add as it's imported)
 # --------------------------------------------------------------------------------
