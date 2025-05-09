@@ -1,8 +1,8 @@
 # core/services/telephony_wrapper.py
 
 import logging
-from typing import Optional
-
+import asyncio
+from typing import Optional, Dict, List, Any
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
 
