@@ -1,37 +1,44 @@
-# /requirements.txt:
+# /requirements.txt: (Holistically Reviewed for Deployment)
 # --------------------------------------------------------------------------------
 # --- Core Framework & Web ---
-fastapi>=0.100.0,<0.112.0
-uvicorn[standard]>=0.20.0,<0.30.0
-aiohttp>=3.9.0,<3.10.0 # For DataWrapper, etc.
-websockets>=12.0,<13.0 # For Deepgram and FastAPI WebSocket
+fastapi>=0.110.0,<0.112.0 # Updated to a recent stable version
+uvicorn[standard]>=0.27.0,<0.30.0 # Updated to a recent stable version
+aiohttp>=3.9.0,<3.10.0
+websockets>=12.0,<13.0
 
 # --- AI & LLMs ---
-openai>=1.0.0,<2.0.0 # For OpenRouter client
-lru-dict>=1.1.6,<1.3.0 # For LLMClient cache
+openai>=1.10.0,<2.0.0 # Updated OpenAI SDK (used by OpenRouter)
+lru-dict>=1.2.0,<1.3.0 # Ensure latest 1.x
 
 # --- Web Interaction & Scraping ---
-playwright>=1.40.0,<1.46.0
-# beautifulsoup4>=4.12.0,<4.13.0 # Add back if used for HTML parsing elsewhere
-faker>=20.0.0,<27.0.0 # For FingerprintGenerator
-fake-useragent>=1.4.0,<1.6.0 # For FingerprintGenerator
+playwright>=1.42.0,<1.46.0 # Updated to a recent stable version
+faker>=24.0.0,<27.0.0 # Updated
+fake-useragent>=1.5.0,<1.6.0 # Updated
 
 # --- External Services ---
-twilio>=8.0.0,<9.5.0
-deepgram-sdk>=3.0.0,<3.5.0 # Check compatibility with VoiceHandler imports
-supabase>=1.0.0,<2.5.0
-pydantic-settings>=2.0.0,<2.4.0 # For config loading if expanded
+twilio>=8.9.0,<9.5.0 # Updated Twilio SDK
+deepgram-sdk>=3.1.0,<3.5.0 # Updated Deepgram SDK
+supabase>=2.0.0,<2.5.0 # Updated Supabase SDK
+pydantic-settings>=2.1.0,<2.4.0 # For typed settings if adopted
 
 # --- Utilities ---
 python-dotenv>=1.0.0,<1.1.0
-psutil>=5.9.0,<6.0.0 # System utilities
-requests>=2.30.0,<2.33.0 # General HTTP requests
-# cryptography>=40.0.0 # If needed for any auth/security not covered
+psutil>=5.9.0,<6.0.0
+requests>=2.31.0,<2.33.0 # General HTTP requests, updated
 
 # --- Deployment/Orchestration ---
-docker>=6.0.0,<8.0.0 # For DockerDeploymentManager
+docker>=7.0.0,<8.0.0 # If DockerDeploymentManager is used, updated SDK
+
+# --- Optional but useful for production/robustness ---
+tenacity>=8.2.0,<8.3.0 # For robust retry mechanisms
+
+# --- Database (Only if NOT using Supabase client exclusively, e.g. direct SQLAlchemy) ---
+# asyncpg>=0.29.0,<0.30.0 # If using SQLAlchemy with PostgreSQL directly
+# SQLAlchemy>=2.0.0,<2.1.0 # If using an ORM directly for other parts
 
 # Ensure all direct imports in your Python files are covered.
-# Example: if "email-validator" or "mailersend" are used, add them.
-# numpy, pytz, reportlab, pybreaker, tenacity etc. were in original, add if needed.
+# If you use other specific libraries, ensure they are listed here.
+# Removed some from original that didn't seem used by core logic:
+# beautifulsoup4 (Playwright can handle most parsing, or LLM)
+# numpy, pytz, reportlab, pybreaker (add back if specific features need them)
 # --------------------------------------------------------------------------------
