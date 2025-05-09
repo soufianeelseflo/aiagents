@@ -2,38 +2,38 @@
 # --------------------------------------------------------------------------------
 # Filename: requirements.txt
 # Description: Python dependencies for the Boutique AI System.
-# Version: 4.6 (Attempting more specific pins for httpx conflict)
+# Version: 4.7 (Upgrading supabase-py to resolve httpx conflict)
 
 # --- Core Framework & Web ---
-fastapi>=0.110.0 # Ensuring a recent fastapi
-uvicorn[standard]>=0.27.0 # Ensuring a recent uvicorn
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
 
-# --- HTTP Client (Crucial Pin) ---
-# Supabase 1.x seems to require httpx < 0.25.0.
-# OpenAI is flexible (>=0.23.0, <1.0.0).
-# We need deepgram-sdk to align with httpx < 0.25.0.
-httpx==0.24.1 # PINNED: Specific version for Supabase 1.x and OpenAI
+# --- HTTP Client (Targeting a version compatible with modern libraries) ---
+# deepgram-sdk (>=3.4.0) requires httpx ^0.25.2
+# openai (>=1.x) is flexible (httpx >=0.23.0, <1.0.0)
+# We will try to use httpx that satisfies deepgram and openai, and then update supabase.
+httpx>=0.25.2,<1.0.0 # Allows deepgram-sdk and openai to pick a compatible version
 
 # --- AI & LLMs ---
-openai>=1.23.0,<1.36.0 # Broadened slightly, but 1.30.0 from log is fine with httpx 0.24.1
+openai>=1.30.0,<2.0.0 # Keeping openai modern and flexible with httpx
 
 # --- Database ---
-supabase>=1.0.0,<1.3.0 # Keep Supabase 1.x for now, which implies httpx < 0.25.0
-                      # Log shows 1.2.0 selected by pip
+# MODIFIED: Upgrade supabase-py to a 2.x version.
+# Recent 2.x versions (e.g., 2.15.0 from March 2025 in search results)
+# should use newer sub-dependencies (like gotrue-py >= 2.x)
+# that are compatible with httpx >= 0.25.x.
+supabase>=2.10.0,<3.0.0 # Targeting a recent stable 2.x range from late 2024/early 2025
 
 # --- External Services ---
-# MODIFIED: Try an older deepgram-sdk that *should* be compatible with httpx 0.24.1
-# Deepgram SDK v3.3.5 is known to have different httpx requirements than v3.4.0+
-deepgram-sdk==3.3.5
-
+deepgram-sdk>=3.7.0,<3.8.0 # Using a recent version from your logs, compatible with httpx >=0.25.2
 twilio<9.4.0,>=9.0.0
-websockets<13.2,>=12.0 # Generally okay, uvicorn[standard] might also pull a version
+websockets<13.2,>=12.0
 
 # --- Other Core Libraries ---
 sqlalchemy<2.1.0,>=2.0.35
 asyncpg<0.31.0,>=0.29.0
 psutil<6.1.0,>=5.9.8
-aiohttp<3.11.0,>=3.9.5 # For DataWrapper and Twilio's aiohttp-retry
+aiohttp<3.11.0,>=3.9.5
 
 # --- Web Interaction & Scraping ---
 playwright<1.48.0,>=1.44.0
@@ -46,11 +46,11 @@ pydantic-settings<2.4.0,>=2.0.0
 tenacity<9.1.0,>=8.2.0
 pybreaker<1.3.0,>=1.1.0
 python-dotenv<1.1.0,>=1.0.1
-pytz<2025.0,>=2024.1 # Ensure pytz is compatible with python-dateutil if used
-cryptography>=44.0.1
-requests<2.33.0,>=2.31.0 # Primarily for any sync SDKs that might use it
+pytz<2025.0,>=2024.1
+cryptography>=44.0.1 # Ensure recent enough for Python 3.11
+requests<2.33.0,>=2.31.0
 
 # --- Other Dependencies ---
 numpy<1.27.0,>=1.26.4
-docker>=7.0.0 # For DeploymentManager
+docker>=7.0.0
 # --------------------------------------------------------------------------------
