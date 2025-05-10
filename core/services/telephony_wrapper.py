@@ -2,7 +2,8 @@
 
 import logging
 import asyncio
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any # CORRECTED
+
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
 
@@ -20,8 +21,6 @@ class TelephonyWrapper:
             raise ValueError("Missing required Twilio configuration.")
         try:
             self.client = TwilioClient(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN)
-            # Test connection by fetching account (optional, can be noisy)
-            # self.client.api.accounts(config.TWILIO_ACCOUNT_SID).fetch()
             logger.info("TelephonyWrapper: Twilio client initialized successfully.")
         except TwilioRestException as e:
             logger.critical(f"TelephonyWrapper: Failed to initialize Twilio client or verify credentials: {e}", exc_info=True)
@@ -39,33 +38,30 @@ class TelephonyWrapper:
         Returns:
             The Twilio Call SID if successful, otherwise None.
         """
-        if not config.BASE_WEBHOOK_URL: # Should have been caught in __init__ but double check
+        if not config.BASE_WEBHOOK_URL:
              logger.error("Cannot initiate call: BASE_WEBHOOK_URL is not configured.")
              return None
 
-        # Ensure BASE_WEBHOOK_URL ends with a slash if appending paths, or join paths carefully.
         call_answered_webhook_url = f"{config.BASE_WEBHOOK_URL.rstrip('/')}/call_webhook"
         
-        # Add custom parameters to the webhook URL if provided
         if custom_parameters:
-            param_string = "&".join([f"Custom_{k}={v}" for k,v in custom_parameters.items()]) # Twilio prefixes with Custom_
+            # Ensure values are simple strings for URL parameters
+            safe_custom_parameters = {k: str(v) for k, v in custom_parameters.items()}
+            param_string = "&".join([f"Custom_{k}={v}" for k,v in safe_custom_parameters.items()])
             call_answered_webhook_url += f"?{param_string}"
 
         logger.info(f"Initiating outbound call from {config.TWILIO_PHONE_NUMBER} to {target_number}...")
         logger.debug(f"Using call answered webhook: {call_answered_webhook_url}")
 
         try:
-            call = await asyncio.to_thread( # Run synchronous SDK call in thread
+            call = await asyncio.to_thread( 
                 self.client.calls.create,
                 to=target_number,
                 from_=config.TWILIO_PHONE_NUMBER,
-                url=call_answered_webhook_url, # TwiML URL Twilio requests when call connects
+                url=call_answered_webhook_url,
                 method="POST",
-                machine_detection="Enable", # Detect answering machines
-                machine_detection_timeout=8, # Shorter timeout
-                # async_amd="true", # For async AMD results via status callback
-                # async_amd_status_callback=f"{config.BASE_WEBHOOK_URL.rstrip('/')}/amd_status_webhook",
-                # async_amd_status_callback_method="POST",
+                machine_detection="Enable", 
+                machine_detection_timeout=8,
                 # status_callback=f"{config.BASE_WEBHOOK_URL.rstrip('/')}/call_status_webhook", # For detailed call events
                 # status_callback_event=["initiated", "ringing", "answered", "completed"],
                 # status_callback_method="POST"
@@ -81,16 +77,18 @@ class TelephonyWrapper:
 
     async def end_call(self, call_sid: str) -> bool:
         """Attempts to terminate an ongoing call."""
-        if not call_sid: logger.warning("End call requested but no Call SID provided."); return False
+        if not call_sid: 
+            logger.warning("End call requested but no Call SID provided.")
+            return False
         logger.info(f"Requesting termination of call SID: {call_sid}")
         try:
             call = await asyncio.to_thread(self.client.calls(call_sid).update, status='completed')
             logger.info(f"Call {call_sid} termination request successful. Final status: {call.status}")
             return True
         except TwilioRestException as e:
-            if e.status == 404: # Call already ended or doesn't exist
+            if e.status == 404: 
                  logger.warning(f"Call {call_sid} not found or already ended when trying to terminate.")
-                 return True # Effectively, it's ended
+                 return True 
             logger.error(f"Twilio API error terminating call {call_sid}: {e.code} - {e.msg}", exc_info=False)
             return False
         except Exception as e:
